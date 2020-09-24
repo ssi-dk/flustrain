@@ -34,6 +34,7 @@ def plot_depths(basepath):
     plt.ylim(1, plt.ylim()[1])
     plt.yticks(fontsize=12)
     plt.xlim(-0.01, 1.01)
+    plt.legend(sorted(genes))
 
     return figure
 

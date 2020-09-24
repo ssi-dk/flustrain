@@ -10,23 +10,18 @@ struct Hash # 128 bits is enough
     b::UInt64
 end
 
-function Hash(rec::FASTQ.Record)
-    isempty(rec.identifier) && throw(ArgumentError("Read empty"))
-    sh = sha256(view(rec.data, rec.identifier))
+function Hash(st::Union{AbstractString, AbstractArray{UInt8}})
+    sh = sha256(v)
     GC.@preserve sh begin
-        p = Ptr{UInt64}(pointer(sh))
+        p = Ptr{UInt64}(pointer(sh))    
         h = Hash(unsafe_load(p, 1), unsafe_load(p, 2))
     end
     return h
 end
 
-function Hash(st::AbstractString)
-    sh = sha256(st)
-    GC.@preserve st begin
-        p = Ptr{UInt64}(pointer(sh))    
-        h = Hash(unsafe_load(p, 1), unsafe_load(p, 2))
-    end
-    return h
+function Hash(rec::FASTQ.Record)
+    isempty(rec.identifier) && throw(ArgumentError("Read empty"))
+    Hash(view(rec.data, rec.identifier))
 end
 
 ##
@@ -63,14 +58,20 @@ function get_fastqs(dir::AbstractString)::Vector{Tuple{String, String}}
 end
 
 ##
-function build_present_set(path::AbstractString)::Set{Hash}
+"Parse the out.frag.gz file and extract a set of mapping readnames"
+function build_present_set(path::AbstractString, minscore::Int)::Set{Hash}
     open(path) do file
         io = GzipDecompressorStream(file)
         s = sizehint!(Set{Hash}(), 100000)
-        for line in eachline(io)
-            push!(s, Hash(last(split(line))))
+        for (lineno, line) in enumerate(eachline(io))
+            fields = split(line)
+            if length(fields) != 7
+                throw(ArgumentError("Line $lineno of file $path does not contain 7 fields"))
+            end
+            score = parse(Int, fields[3])
+            score > minscore && push!(s, Hash(last(split(line))))
         end
-        s
+        return s
     end
 end
 
@@ -108,7 +109,11 @@ function filter_fastq(dstdir, srcdir, fw, rv, db)
     filter_fastq(hashset, rvin, rvout)
 end
 
-@main function filter_flu(dstdir, srcdir, db)
+@main function filter_flu(dstdir, srcdir, kmadb, minscore::Int=100)
+    for i in (dstdir, srcdir)
+        isdir(i) || throw(SystemError("Directory not found: $i"))
+    end
+        
     mkdir(dstdir)
     pairs = get_fastqs(srcdir)
     Threads.@threads for (fw, rv) in pairs

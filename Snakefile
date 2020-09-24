@@ -42,7 +42,7 @@ sys.path.append("scripts")
 import tools
 
 # Datadir should look like this:
-# data/
+# ref/
 #     H1N1/
 #         HA.ref.fna (not including stop)
 #         HA.all.fna
@@ -57,17 +57,17 @@ import tools
 ######################################################
 # GLOBAL CONSTANTS
 ######################################################
-READ_PAIRS = tools.get_read_pairs(os.path.join("data", "reads"))
+READ_PAIRS = tools.get_read_pairs(os.path.join("reads"))
 BASENAMES = sorted(READ_PAIRS.keys())
 
-SUBTYPES = set(next(os.walk("data"))[1])
+SUBTYPES = set(next(os.walk("ref"))[1])
 SUBTYPES.discard("reads")
 if len(SUBTYPES) < 1:
     raise ValueError("Must specify at least one subtype in data directory")
 
 allsegments = []
 for subtype in SUBTYPES:
-    filenames = os.listdir(os.path.join("data", subtype))
+    filenames = os.listdir(os.path.join("ref", subtype))
     sortedsegments = sorted([fn.partition('.')[0] for fn in filenames if fn.endswith(".ref.fna")])
     allsegments.append((subtype, sortedsegments))
 
@@ -81,7 +81,7 @@ CPUS = os.cpu_count()
 
 for subtype in SUBTYPES:
     for segment in SEGMENTS:
-        path = "data/{}/{}.all.fna".format(subtype, segment)
+        path = "ref/{}/{}.all.fna".format(subtype, segment)
         if not os.path.exists(path):
             with open(path, "w") as file:
                 pass
@@ -159,8 +159,8 @@ rule extract_orf:
 # First we do this so we have an "pure subtype" clade.
 rule cat_within_subtype:
     input:
-        ref="data/{subtype}/{gene}.ref.fna",
-        all="data/{subtype}/{gene}.all.fna"
+        ref="ref/{subtype}/{gene}.ref.fna",
+        all="ref/{subtype}/{gene}.all.fna"
     output: "output/pan/{subtype}/{gene}.cat.fna"
     run:
         tools.cat_fasta(output[0], [input.ref, input.all])
@@ -185,8 +185,7 @@ rule index_panfile:
         comp="output/pan/{gene,[A-Z0-9]+}.pan.comp.b",
         name="output/pan/{gene,[A-Z0-9]+}.pan.name",
         length="output/pan/{gene,[A-Z0-9]+}.pan.length.b",
-        seq="output/pan/{gene,[A-Z0-9]+}.pan.seq.b",
-        index="output/pan/{gene,[A-Z0-9]+}.pan.index.b"
+        seq="output/pan/{gene,[A-Z0-9]+}.pan.seq.b"
     params: "output/pan/{gene}.pan"
     log: "output/log/kma_ref/{gene}.log"
     shell: "kma index -i {input} -o {params} 2> {log}"
@@ -368,7 +367,7 @@ rule iqtree:
 # MUTATIONS PART OF PIPELINE
 ############################
 rule copy_ref:
-    input: "data/{subtype}/{gene}.ref.fna"
+    input: "ref/{subtype}/{gene}.ref.fna"
     output: "output/pan/{subtype}/{gene}.ref.fna"
     shell: "cp {input} {output}"
 
