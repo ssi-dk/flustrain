@@ -63,6 +63,7 @@ READ_PAIRS = tools.get_read_pairs(os.path.join(SNAKEDIR, READDIR))
 BASENAMES = sorted(READ_PAIRS.keys())
 
 REFDIR = os.path.join(SNAKEDIR, "ref")
+REFOUTDIR = os.path.join(SNAKEDIR, "refout")
 SUBTYPES = set(next(os.walk(REFDIR))[1])
 if len(SUBTYPES) < 1:
     raise ValueError("Must specify at least one subtype in data directory")
@@ -163,19 +164,19 @@ rule cat_within_subtype:
     input:
         ref=REFDIR + "/{subtype}/{gene}.ref.fna",
         all=REFDIR + "/{subtype}/{gene}.all.fna"
-    output: "pan/{subtype}/{gene}.cat.fna"
+    output: REFOUTDIR + "/{subtype}/{gene}.cat.fna"
     run:
         tools.cat_fasta(output[0], [input.ref, input.all])
 
 rule cat_all_subtypes:
-    input: expand("pan/{subtype}/{{gene}}.cat.fna", subtype=SUBTYPES),
+    input: expand(REFOUTDIR + "/{subtype}/{{gene}}.cat.fna", subtype=SUBTYPES),
     output:
-        pan="pan/{gene,[A-Z0-9]+}.pan.fna",
-        map="pan/{gene,[A-Z0-9]+}.map.txt"
+        pan=REFOUTDIR + "/{gene,[A-Z0-9]+}.pan.fna",
+        map=REFOUTDIR + "/{gene,[A-Z0-9]+}.map.txt"
     run:
         with open(output[0], "w") as panfile, open(output[1], "w") as mapfile:
             for subtype in SUBTYPES:
-                path = "pan/{}/{}.cat.fna".format(subtype, wildcards.gene)
+                path = REFOUTDIR + "/{}/{}.cat.fna".format(subtype, wildcards.gene)
                 with open(path, "rb") as infile:
                     for record in tools.byte_iterfasta(infile):
                         print(record.format(), file=panfile)
@@ -184,19 +185,19 @@ rule cat_all_subtypes:
 rule index_panfile:
     input: rules.cat_all_subtypes.output.pan
     output:
-        comp="pan/{gene,[A-Z0-9]+}.pan.comp.b",
-        name="pan/{gene,[A-Z0-9]+}.pan.name",
-        length="pan/{gene,[A-Z0-9]+}.pan.length.b",
-        seq="pan/{gene,[A-Z0-9]+}.pan.seq.b"
-    params: "pan/{gene}.pan"
+        comp=REFOUTDIR + "/{gene,[A-Z0-9]+}.pan.comp.b",
+        name=REFOUTDIR + "/{gene,[A-Z0-9]+}.pan.name",
+        length=REFOUTDIR + "/{gene,[A-Z0-9]+}.pan.length.b",
+        seq=REFOUTDIR + "/{gene,[A-Z0-9]+}.pan.seq.b"
+    params: REFOUTDIR + "/{gene}.pan"
     log: "log/kma_ref/{gene}.log"
     shell: "kma index -i {input} -o {params} 2> {log}"
 
 rule reference_iqtree:
-    input: "pan/{subtype}/{gene}.cat.aln.fna"
-    output:"pan/{subtype}/{gene}.contree"
+    input: REFOUTDIR + "/{subtype}/{gene}.cat.aln.fna"
+    output: REFOUTDIR + "/{subtype}/{gene}.contree"
     params:
-        pre="pan/{subtype}/{gene}",
+        pre=REFOUTDIR + "/{subtype}/{gene}",
         bootstrap=1000,
         boot_iter=2500,
         model="HKY+G2" # just pick a model to be consistent
@@ -237,7 +238,7 @@ rule initial_kma_map:
         index=rules.index_panfile.output
     output: "aln/{basename}/{gene,[A-Z0-9]+}.spa"
     params:
-        db="pan/{gene}.pan", # same as index_panfile param
+        db=REFOUTDIR + "/{gene}.pan", # same as index_panfile param
         outbase="aln/{basename}/{gene}"
     threads: 2
     log: "log/aln/{basename}_{gene}.initial.log"
@@ -262,7 +263,7 @@ rule kma_map:
         res="aln/{basename}/{gene,[A-Z0-9]+}.res",
         fsa="aln/{basename}/{gene,[A-Z0-9]+}.fsa"
     params:
-        db="pan/{gene}.pan", # same as index_panfile param
+        db=REFOUTDIR + "/{gene}.pan", # same as index_panfile param
         outbase="aln/{basename}/{gene}",
         refindex=kma_map_index
     log: "log/aln/{basename}_{gene}.log"
@@ -276,7 +277,7 @@ rule kma_map:
 rule move_consensus:
     input:
         con="aln/{basename}/{gene}.fsa",
-        map="pan/{gene}.map.txt"
+        map=REFOUTDIR + "/{gene}.map.txt"
     output:
         con="consensus/{basename}/{gene}.fna",
         sub="consensus/{basename}/{gene}.subtype"
@@ -334,20 +335,20 @@ rule plot_depths:
 rule cat_orfs:
     input:
         consensus="consensus/{basename}/{gene}.orf.faa",
-        fnas=expand("pan/{subtype}/{{gene}}.cat.orf.faa", subtype=SUBTYPES),
+        fnas=expand(REFOUTDIR + "/{subtype}/{{gene}}.cat.orf.faa", subtype=SUBTYPES),
         sub="consensus/{basename}/{gene}.subtype"
     output: "phylogeny/{basename}/{gene,[A-Z0-9]+}.faa"
     run:
         with open(input.sub) as file:
             subtype = next(file).strip()
 
-        tools.cat_fasta(output[0], [f"pan/{subtype}/{wildcards.gene}.cat.orf.faa", input.consensus])
+        tools.cat_fasta(output[0], [f"{REFOUTDIR}/{subtype}/{wildcards.gene}.cat.orf.faa", input.consensus])
 
 def get_iqtree_constraint(wildcards):
     with open(f"consensus/{wildcards.basename}/{wildcards.gene}.subtype") as file:
         subtype = next(file).strip()
 
-    return "pan/{}/{}.contree".format(subtype, wildcards.gene)
+    return "{}/{}/{}.contree".format(REFOUTDIR, subtype, wildcards.gene)
 
 rule iqtree:
     input:
@@ -370,19 +371,19 @@ rule iqtree:
 ############################
 rule copy_ref:
     input: REFDIR + "/{subtype}/{gene}.ref.fna"
-    output: "pan/{subtype}/{gene}.ref.fna"
+    output: REFOUTDIR + "/{subtype}/{gene}.ref.fna"
     shell: "cp {input} {output}"
 
 rule cat_mutations:
     input:
         con="consensus/{basename}/{gene}.orf.faa",
-        refs=expand("pan/{subtype}/{{gene}}.ref.orf.faa", subtype=SUBTYPES),
+        refs=expand(REFOUTDIR + "/{subtype}/{{gene}}.ref.orf.faa", subtype=SUBTYPES),
         sub="consensus/{basename}/{gene}.subtype"
     output: "consensus/{basename}/{gene}.cat.faa"
     run:
         with open(input.sub) as file:
             subtype = next(file).strip()
-        inpath = f"pan/{subtype}/{wildcards.gene}.ref.orf.faa"
+        inpath = f"{REFOUTDIR}/{subtype}/{wildcards.gene}.ref.orf.faa"
         tools.cat_fasta(output[0], [inpath, input.con])
 
 rule mutations:
