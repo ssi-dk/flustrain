@@ -1,16 +1,19 @@
+# This script removes all reads that do not map to a given reference
+
 using CodecZlib
 using FASTX
 using SHA
 using Comonicon
 
 const ENDINGS = ("fastq.gz", ".fq.gz")
+const PATTERN = r"^([^_]+_S\d+)_L001_R(1|2)_001.fastq.gz$"
 
 struct Hash # 128 bits is enough
     a::UInt64
     b::UInt64
 end
 
-function Hash(st::Union{AbstractString, AbstractArray{UInt8}})
+function Hash(v::Union{AbstractString, AbstractArray{UInt8}})
     sh = sha256(v)
     GC.@preserve sh begin
         p = Ptr{UInt64}(pointer(sh))    
@@ -26,7 +29,7 @@ end
 
 ##
 function parse_filename(s::AbstractString)
-    m = match(r"^([^_]+_S\d+)_L001_R(1|2)_001.fastq.gz$", s)
+    m = match(PATTERN, s)
     m === nothing && throw(ArgumentError("Invalid file name: $s"))
     head = m[1]
     fw = m[2] == "1"
@@ -64,12 +67,13 @@ function build_present_set(path::AbstractString, minscore::Int)::Set{Hash}
         io = GzipDecompressorStream(file)
         s = sizehint!(Set{Hash}(), 100000)
         for (lineno, line) in enumerate(eachline(io))
-            fields = split(line)
+            fields = split(line, '\t')
             if length(fields) != 7
                 throw(ArgumentError("Line $lineno of file $path does not contain 7 fields"))
             end
             score = parse(Int, fields[3])
-            score > minscore && push!(s, Hash(last(split(line))))
+            identifier = first(split(last(fields)))
+            score > minscore && push!(s, Hash(identifier))
         end
         return s
     end
@@ -91,10 +95,11 @@ end
 
 ##
 function kma_map(dir::AbstractString, fw::AbstractString, rv::AbstractString, db::AbstractString)
-    run(`kma -ipe $fw $rv -o $dir/kmaout -t_db $db`)
+    # Memory map input (we assume small files), and do not create consensus seqs
+    run(`kma -ipe $fw $rv -o $dir/kmaout -mmap -nc -t_db $db`)
 end
 
-function filter_fastq(dstdir, srcdir, fw, rv, db)
+function filter_fastq(dstdir, srcdir, fw, rv, db, minscore)
     fwin = joinpath(srcdir, fw)
     fwout = joinpath(dstdir, fw)
     rvin = joinpath(srcdir, rv)
@@ -102,21 +107,34 @@ function filter_fastq(dstdir, srcdir, fw, rv, db)
 
     hashset = mktempdir(".") do dir
         kma_map(dir, fwin, rvin, db)
-        build_present_set(joinpath(dir, "kmaout.frag.gz"))
+        hashset = build_present_set(joinpath(dir, "kmaout.frag.gz"), minscore) ####
     end
 
     filter_fastq(hashset, fwin, fwout)
     filter_fastq(hashset, rvin, rvout)
 end
+"""
+Anonymize reads not mapping to KMA index.
 
-@main function filter_flu(dstdir, srcdir, kmadb, minscore::Int=100)
-    for i in (dstdir, srcdir)
-        isdir(i) || throw(SystemError("Directory not found: $i"))
-    end
-        
+This script assumes
+* Short, high-quality, paired-end Illumina-like reads.
+* Reads and index small enough to align in memory
+* gzipped FASTQ filenames match regex $(PATTERN)
+
+# Arguments
+
+- `dstdir`: Destination directory to create
+- `srcdir`: Where to find the gzipped FASTQ files
+- `kmadb`: Name of KMA index, without file extention
+
+# Options
+
+- `--minscoore <arg>`: Minimum alignment score to keep [100]
+"""
+@main function anonymize(dstdir, srcdir, kmadb, minscore::Int=100)
     mkdir(dstdir)
     pairs = get_fastqs(srcdir)
-    Threads.@threads for (fw, rv) in pairs
-        filter_fastq(dstdir, srcdir, fw, rv, db)
+    Threads.@threads for (fw, rv) in pairs[1:3]
+        filter_fastq(dstdir, srcdir, fw, rv, kmadb, minscore)
     end
 end

@@ -171,8 +171,8 @@ rule cat_within_subtype:
 rule cat_all_subtypes:
     input: expand(REFOUTDIR + "/{subtype}/{{gene}}.cat.fna", subtype=SUBTYPES),
     output:
-        pan=REFOUTDIR + "pan/{gene,[A-Z0-9]+}.fna",
-        map=REFOUTDIR + "pan/{gene,[A-Z0-9]+}.map.txt"
+        pan=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.fna",
+        map=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.map.txt"
     run:
         with open(output[0], "w") as panfile, open(output[1], "w") as mapfile:
             for subtype in SUBTYPES:
@@ -185,11 +185,11 @@ rule cat_all_subtypes:
 rule index_panfile:
     input: rules.cat_all_subtypes.output.pan
     output:
-        comp=REFOUTDIR + "pan/{gene,[A-Z0-9]+}.comp.b",
-        name=REFOUTDIR + "pan/{gene,[A-Z0-9]+}.name",
-        length=REFOUTDIR + "pan/{gene,[A-Z0-9]+}.length.b",
-        seq=REFOUTDIR + "pan/{gene,[A-Z0-9]+}.seq.b"
-    params: REFOUTDIR + "pan/{gene}"
+        comp=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.comp.b",
+        name=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.name",
+        length=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.length.b",
+        seq=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.seq.b"
+    params: REFOUTDIR + "/pan/{gene}"
     log: "log/kma_ref/{gene}.log"
     shell: "kma index -i {input} -o {params} 2> {log}"
 
@@ -214,8 +214,10 @@ rule adapterremoval:
         fw=lambda wildcards: READ_PAIRS[wildcards.basename][0],
         rv=lambda wildcards: READ_PAIRS[wildcards.basename][1],
     output:
-        fw='trim/{basename}/{basename}.pair1.truncated.gz',
-        rv='trim/{basename}/{basename}.pair2.truncated.gz'
+        discarded=temp('trim/{basename}/{basename}.discarded.gz'),
+        single=temp('trim/{basename}/{basename}.singleton.truncated.gz'),
+        fw=temp('trim/{basename}/{basename}.pair1.truncated.gz'),
+        rv=temp('trim/{basename}/{basename}.pair2.truncated.gz')
     log: 'log/trim/{basename}.log'
     params:
         basename="trim/{basename}/{basename}"
@@ -238,7 +240,7 @@ rule initial_kma_map:
         index=rules.index_panfile.output
     output: "aln/{basename}/{gene,[A-Z0-9]+}.spa"
     params:
-        db=REFOUTDIR + "/{gene}", # same as index_panfile param
+        db=REFOUTDIR + "/pan/{gene}", # same as index_panfile param
         outbase="aln/{basename}/{gene}"
     threads: 2
     log: "log/aln/{basename}_{gene}.initial.log"
@@ -263,7 +265,7 @@ rule kma_map:
         res="aln/{basename}/{gene,[A-Z0-9]+}.res",
         fsa="aln/{basename}/{gene,[A-Z0-9]+}.fsa"
     params:
-        db=REFOUTDIR + "/{gene}", # same as index_panfile param
+        db=REFOUTDIR + "/pan/{gene}", # same as index_panfile param
         outbase="aln/{basename}/{gene}",
         refindex=kma_map_index
     log: "log/aln/{basename}_{gene}.log"
@@ -277,7 +279,7 @@ rule kma_map:
 rule move_consensus:
     input:
         con="aln/{basename}/{gene}.fsa",
-        map=REFOUTDIR + "pan/{gene}.map.txt"
+        map=REFOUTDIR + "/pan/{gene}.map.txt"
     output:
         con="consensus/{basename}/{gene}.fna",
         sub="consensus/{basename}/{gene}.subtype"
