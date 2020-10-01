@@ -97,17 +97,29 @@ ruleorder: translate > trim_alignment > mafft
 # We add the checkpoiint output here just to make sure the checkpoint is included
 # in the DAG
 def done_input(wildcards):
+    # Add report
     inputs = ["report.txt"]
     checkpoints.cat_reports.get()
+
     for basename in BASENAMES:
+        # Add FASTQC report
+        for pair in (1, 2):
+            inputs.append(f"fastqc/{basename}/{basename}.pair{pair}.truncated_fastqc.html")
+        
+        # Add individual report
         inputs.append(f"consensus/{basename}/report.txt")
+
+        # Add depth plot
         inputs.append(f"depths/{basename}.pdf")
         with open(f"consensus/{basename}/accepted.txt") as accepted_file:
             accepted = set(filter(None, map(str.strip, accepted_file)))
+
+            # Add phylogeny of selected genes
             for phylogene in ["HA"]:
                 if phylogene in accepted:
                     inputs.append(f"phylogeny/{basename}/{phylogene}.treefile")
 
+            # Add resistance of selected genes.
             for resistancegene in ["NA"]:
                 with open(f"consensus/{basename}/{resistancegene}.subtype") as file:
                     subtype = next(file).strip()
@@ -221,6 +233,7 @@ rule adapterremoval:
     log: 'log/trim/{basename}.log'
     params:
         basename="trim/{basename}/{basename}"
+    threads: 2
     shell:
         'AdapterRemoval '
         # Input files
@@ -230,13 +243,28 @@ rule adapterremoval:
         "2> {log} "
         # Other parameters:
         '--minlength 30 --trimns --trimqualities --minquality 20 '
-        '--qualitybase 33 --gzip --trimwindows 5'
+        '--qualitybase 33 --gzip --trimwindows 5 --threads {threads}'
+
+rule fastqc:
+    input: [rules.adapterremoval.output.fw, rules.adapterremoval.output.rv]
+    output:
+        fw='fastqc/{basename}/{basename}.pair1.truncated_fastqc.html',
+        rv='fastqc/{basename}/{basename}.pair2.truncated_fastqc.html',
+    log: 'log/fastqc/{basename}.log'
+    threads: 2
+    # Annoyingly, it prints "analysis complete" to stdout
+    shell: 'fastqc -t {threads} {input} -o fastqc/{wildcards.basename} 2> {log} > /dev/null'
 
 # Do this to get the best template, -Sparse option is designed for this.
 rule initial_kma_map:
     input:
         fw='trim/{basename}/{basename}.pair1.truncated.gz',
         rv='trim/{basename}/{basename}.pair2.truncated.gz',
+        # We artificially add FASTQC here to move FASTQC up the dependency graph,
+        # such that it is completed before the checkpoint. Else, Snakemake will remove
+        # the trimmed files before FASTQC, since it can't see across the checkpoint
+        # and will believe there is no more use of the trimmed files.
+        fastqc = rules.fastqc.output,
         index=rules.index_panfile.output
     output: "aln/{basename}/{gene,[A-Z0-9]+}.spa"
     params:
