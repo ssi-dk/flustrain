@@ -47,6 +47,7 @@ for (conpath, matpath, subpath) in zip(*[sorted(i) for i in kinds]):
     print(f"{gene}:\t{subtypes[gene]} ", file=report_file, end="")
 
     if len(consensus) == 0:
+        print("", file=report_file)
         continue
 
     depth, low_coverage, reference = get_depth(matpath)

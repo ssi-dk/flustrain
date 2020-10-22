@@ -7,7 +7,11 @@ import numpy as np
 def get_depths(filehandle):
     # Get by-base depth
     depths = list()
-    next(filehandle) # skip header
+    # Try to skip header. If no header exists, no reads were mapped.
+    try:
+        next(filehandle)
+    except StopIteration:
+        return [0, 0, 0]
 
     for fields in filter(None, map(lambda line: line.rstrip().split(), filehandle)):
         # Skip bases that are gap in reference (i.e. insertions)
