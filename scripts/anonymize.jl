@@ -67,14 +67,12 @@ function build_present_set(path::AbstractString, minscore::Int)::Set{Hash}
         io = GzipDecompressorStream(file)
         s = sizehint!(Set{Hash}(), 100000)
         for (lineno, line) in enumerate(eachline(io))
-            stripline = strip(line)
-            isempty(stripline) && continue
-            fields = split(stripline, '\t')
+            fields = split(line, '\t')
             if length(fields) != 7
                 throw(ArgumentError("Line $lineno of file $path does not contain 7 fields"))
             end
             score = parse(Int, fields[3])
-            identifier = first(split(fields[7]))
+            identifier = first(split(last(fields)))
             score > minscore && push!(s, Hash(identifier))
         end
         return s
@@ -98,8 +96,7 @@ end
 ##
 function kma_map(dir::AbstractString, fw::AbstractString, rv::AbstractString, db::AbstractString)
     # Memory map input (we assume small files), and do not create consensus seqs
-    # use 1t1 to simplify the output of frag.gz (we only care about best hits anyway)
-    run(`kma -ipe $fw $rv -o $dir/kmaout -mmap -nc -1t1 -t_db $db`)
+    run(`kma -ipe $fw $rv -o $dir/kmaout -mmap -nc -t_db $db`)
 end
 
 function filter_fastq(dstdir, srcdir, fw, rv, db, minscore)
@@ -108,11 +105,10 @@ function filter_fastq(dstdir, srcdir, fw, rv, db, minscore)
     rvin = joinpath(srcdir, rv)
     rvout = joinpath(dstdir, rv)
 
-    # We want to dir to stick around if something errors
-    dir = mktempdir(joinpath(dstdir, "tmp"), cleanup=false)
-    kma_map(dir, fwin, rvin, db)
-    hashset = build_present_set(joinpath(dir, "kmaout.frag.gz"), minscore)
-    rm(dir, recursive=true)
+    hashset = mktempdir(".") do dir
+        kma_map(dir, fwin, rvin, db)
+        hashset = build_present_set(joinpath(dir, "kmaout.frag.gz"), minscore) ####
+    end
 
     filter_fastq(hashset, fwin, fwout)
     filter_fastq(hashset, rvin, rvout)
@@ -136,10 +132,9 @@ This script assumes
 - `--minscoore <arg>`: Minimum alignment score to keep [100]
 """
 @main function anonymize(dstdir, srcdir, kmadb, minscore::Int=100)
-    mkpath(joinpath(dstdir, "tmp"))
+    mkdir(dstdir)
     pairs = get_fastqs(srcdir)
-    Threads.@threads for (fw, rv) in pairs
+    Threads.@threads for (fw, rv) in pairs[1:3]
         filter_fastq(dstdir, srcdir, fw, rv, kmadb, minscore)
     end
-    rm(joinpath(dstdir, "tmp"))
 end

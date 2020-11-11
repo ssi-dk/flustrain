@@ -197,6 +197,24 @@ def get_read_pairs(directory):
 
     return reads
 
+def get_nanopore_reads(directory):
+    if not os.path.isdir(directory):
+        raise FileNotFoundError(f"{directory} is not a directory.")
+    filenames = sorted(next(os.walk(directory))[2])
+    if len(filenames) == 0:
+        raise ValueError(f"No files found in {directory}")
+
+    pattern = re.compile("([^\.]+)\.fastq\.gz")
+    reads = dict()
+    for filename in filenames:
+        match = pattern.match(filename)
+        if match is None:
+            raise ValueError(f"Filename {filename} does not match pattern {pattern.pattern}")
+        basename = match.groups()[0]
+        reads[basename] = os.path.join(directory, filename)
+    
+    return reads
+
 def fieldsof(filename, lines, n_fields, line_offset):
     for lineno, line in enumerate(map(str.strip, lines)):
         if not line:
