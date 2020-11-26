@@ -58,8 +58,11 @@ import tools
 ######################################################
 # GLOBAL CONSTANTS
 ######################################################
+if "readdir" not in config:
+    raise KeyError("You must supply absolute read path: '--config readdir=/path/to/reads'")
+
 READDIR = config["readdir"]
-READ_PAIRS = tools.get_read_pairs(os.path.join(SNAKEDIR, READDIR))
+READ_PAIRS = tools.get_read_pairs(READDIR)
 BASENAMES = sorted(READ_PAIRS.keys())
 
 REFDIR = os.path.join(SNAKEDIR, "ref")
@@ -194,6 +197,7 @@ rule cat_all_subtypes:
                         print(record.format(), file=panfile)
                         print(record.header, subtype, sep='\t', file=mapfile)
 
+# We use k=14 because we sometimes have very small reads.
 rule index_panfile:
     input: rules.cat_all_subtypes.output.pan
     output:
@@ -203,7 +207,7 @@ rule index_panfile:
         seq=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.seq.b"
     params: REFOUTDIR + "/pan/{gene}"
     log: "log/kma_ref/{gene}.log"
-    shell: "kma index -i {input} -o {params} 2> {log}"
+    shell: "kma index -k 14 -i {input} -o {params} 2> {log}"
 
 rule reference_iqtree:
     input: REFOUTDIR + "/{subtype}/{gene}.cat.aln.fna"
@@ -226,10 +230,10 @@ rule adapterremoval:
         fw=lambda wildcards: READ_PAIRS[wildcards.basename][0],
         rv=lambda wildcards: READ_PAIRS[wildcards.basename][1],
     output:
-        discarded=temp('trim/{basename}/{basename}.discarded.gz'),
-        single=temp('trim/{basename}/{basename}.singleton.truncated.gz'),
-        fw=temp('trim/{basename}/{basename}.pair1.truncated.gz'),
-        rv=temp('trim/{basename}/{basename}.pair2.truncated.gz')
+        discarded='trim/{basename}/{basename}.discarded.gz',
+        single='trim/{basename}/{basename}.singleton.truncated.gz',
+        fw='trim/{basename}/{basename}.pair1.truncated.gz',
+        rv='trim/{basename}/{basename}.pair2.truncated.gz'
     log: 'log/trim/{basename}.log'
     params:
         basename="trim/{basename}/{basename}"
@@ -242,7 +246,7 @@ rule adapterremoval:
         '--basename {params.basename} '
         "2> {log} "
         # Other parameters:
-        '--minlength 30 --trimns --trimqualities --minquality 20 '
+        '--minlength 20 --trimns --trimqualities --minquality 20 '
         '--qualitybase 33 --gzip --trimwindows 5 --threads {threads}'
 
 rule fastqc:
@@ -274,7 +278,7 @@ rule initial_kma_map:
     log: "log/aln/{basename}_{gene}.initial.log"
     shell:
         "kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-        "-t {threads} -mmap -Sparse 2> {log}"
+        "-t {threads} -Sparse 2> {log}"
 
 def kma_map_index(wc):
     index = tools.get_best_subject(f"aln/{wc.basename}/{wc.gene}.spa")[1]
@@ -300,9 +304,11 @@ rule kma_map:
     threads: 2
     # This is a run command, because the comamdn cannot be evaluated until
     # the initial_kma_map, so printing it in a shell command will raise an error
+    # If gapopen is default, it will lead to totally absurd alignments. Perhaps
+    # setting open/ext/m/mm be -5/-1/1/-3 will lead to better results still?
     run:
         shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-        "-t {threads} -nf -matrix -mmap -Mt1 {params.refindex} 2> {log}")
+        "-t {threads} -k 8 -gapopen -5 -nf -matrix -Mt1 {params.refindex} 2> {log}")
 
 rule move_consensus:
     input:

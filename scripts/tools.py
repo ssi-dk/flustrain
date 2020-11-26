@@ -169,7 +169,9 @@ def get_read_pairs(directory):
     try:
         filenames = sorted(next(os.walk(directory))[2])
     except StopIteration:
-        raise FileNotFoundError("Must specify at least one read pair")
+        raise FileNotFoundError("Must specify at least one read pair. "
+                                "Are you sure you got the directory correct? "
+                                f"{os.path.abspath(directory)}")
 
     pattern = re.compile("(.+)_R([12])(_\d+)?\.fastq\.gz")
 

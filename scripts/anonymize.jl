@@ -60,16 +60,17 @@ function get_fastqs(dir::AbstractString)::Vector{Tuple{String, String}}
     return [Tuple(sort(v)) for v in values(d)]
 end
 
-##
 "Parse the out.frag.gz file and extract a set of mapping readnames"
 function build_present_set(path::AbstractString, minscore::Int)::Set{Hash}
     open(path) do file
         io = GzipDecompressorStream(file)
         s = sizehint!(Set{Hash}(), 100000)
         for (lineno, line) in enumerate(eachline(io))
-            fields = split(line, '\t')
-            if length(fields) != 7
-                throw(ArgumentError("Line $lineno of file $path does not contain 7 fields"))
+            stripped = strip(line)
+            isempty(stripped) && continue
+            fields = split(stripped, '\t')
+            if (length(fields) != 7) & (length(fields) != 9)
+                throw(ArgumentError("Line $lineno of file $path does not contain 7 or 9 fields"))
             end
             score = parse(Int, fields[3])
             identifier = first(split(last(fields)))
@@ -107,7 +108,7 @@ function filter_fastq(dstdir, srcdir, fw, rv, db, minscore)
 
     hashset = mktempdir(".") do dir
         kma_map(dir, fwin, rvin, db)
-        hashset = build_present_set(joinpath(dir, "kmaout.frag.gz"), minscore) ####
+        hashset = build_present_set(joinpath(dir, "kmaout.frag.gz"), minscore)
     end
 
     filter_fastq(hashset, fwin, fwout)
@@ -134,7 +135,7 @@ This script assumes
 @main function anonymize(dstdir, srcdir, kmadb, minscore::Int=100)
     mkdir(dstdir)
     pairs = get_fastqs(srcdir)
-    Threads.@threads for (fw, rv) in pairs[1:3]
+    Threads.@threads for (fw, rv) in pairs
         filter_fastq(dstdir, srcdir, fw, rv, kmadb, minscore)
     end
 end
