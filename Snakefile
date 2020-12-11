@@ -315,7 +315,7 @@ rule move_consensus:
         con="aln/{basename}/{gene}.fsa",
         map=REFOUTDIR + "/pan/{gene}.map.txt"
     output:
-        con="consensus/{basename}/{gene}.fna",
+        con="consensus/{basename}/{gene}.untrimmed.fna",
         sub="consensus/{basename}/{gene}.subtype"
     run:
         with open(input[0], "rb") as file:
@@ -333,7 +333,19 @@ rule move_consensus:
         with open(output.con, "w") as file:
             print(consensus.format(), file=file)
 
-# Here, probably write subtype
+# In our current lab setup, we use primers to amplify our influeza segments. But these do not have the
+# proper sequence
+rule remove_primers:
+    input:
+        con=rules.move_consensus.output.con,
+        primers=f"{SNAKEDIR}/primers.fna"
+    output: "consensus/{basename}/{gene}.fna"
+    log: "log/consensus/remove_primers_{basename}_{gene}.txt"
+    params:
+        scriptpath=f"{SNAKEDIR}/scripts/trim_consensus.jl",
+        minmatches=6
+    run:
+        shell("julia {params.scriptpath} {input.primers} {input.con} {output} {params.minmatches} > {log}")
 
 rule create_report:
     input:
