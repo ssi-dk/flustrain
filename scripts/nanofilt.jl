@@ -65,13 +65,21 @@ function maybe_compress(path)
     end
 end
 
-@main function main(inpath::String, outpath::String,
-              minlength::Int, maxlength::Int,
-              minqual::Int)
+function _nanofilt(inpath::String, outpath::String, minlength::Int,
+                  maxlength::Int, minqual::Int)
     options = Options(minlength, maxlength, minqual)
     in = maybe_decompress(inpath)
     out = maybe_compress(outpath)
     filter(in, out, options)
     close(out)
     close(in)
+end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+
+    @main function nanofilt(inpath::String, outpath::String,
+                  minlength::Int, maxlength::Int,
+                  minqual::Int)
+        nanofilt(inpath, outpath, minlength, maxlength, minqual)
+    end
 end

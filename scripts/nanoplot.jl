@@ -70,15 +70,7 @@ end
 
 hist(y, xlabel) = histogram(y, xlabel=xlabel, legend=nothing)
 
-"""
-Plot quality/length statistics for a PHRED33 FASTQ file.
-
-# Arguments
-
-- `inpath`: Input path to (gzipped or plain) FASTQ file
-- `outdir`: Output directory to create
-"""
-@main function main(inpath::String, outdir::String)
+function _nanoplot(inpath::String, outdir::String)
     mkdir(outdir)
     io = maybe_decompress(inpath)
     lengths, meanquals = getstats(io)
@@ -102,4 +94,16 @@ Plot quality/length statistics for a PHRED33 FASTQ file.
     ys, xs = cumulative(lengths)
     plt = plot(xs, ys, xlabel="Minimum read size", ylabel="Cumulative bases")
     savefig(plt, joinpath(outdir, "lengths.cumulative.png"))
+end
+
+"""
+Plot quality/length statistics for a PHRED33 FASTQ file.
+
+# Arguments
+
+- `inpath`: Input path to (gzipped or plain) FASTQ file
+- `outdir`: Output directory to create
+"""
+if abspath(PROGRAM_FILE) == @__FILE__
+    @main nanoplot(inpath::String, outdir::String) = _nanoplot(inpath, outdir)
 end

@@ -114,13 +114,22 @@ function filter_fastq(dstdir, srcdir, fw, rv, db, minscore)
     filter_fastq(hashset, fwin, fwout)
     filter_fastq(hashset, rvin, rvout)
 end
+
+function _anonymize(dstdir, srcdir, kmadb, minscore)
+    mkdir(dstdir)
+    pairs = get_fastqs(srcdir)
+    Threads.@threads for (fw, rv) in pairs
+        filter_fastq(dstdir, srcdir, fw, rv, kmadb, minscore)
+    end
+end
+
 """
 Anonymize reads not mapping to KMA index.
 
 This script assumes
 * Short, high-quality, paired-end Illumina-like reads.
 * Reads and index small enough to align in memory
-* gzipped FASTQ filenames match regex $(PATTERN)
+* gzipped FASTQ filenames match regex `$PATTERN`
 
 # Arguments
 
@@ -130,12 +139,10 @@ This script assumes
 
 # Options
 
-- `--minscoore <arg>`: Minimum alignment score to keep [100]
+- `--minscore <arg>`: Minimum alignment score to keep [100]
 """
-@main function anonymize(dstdir, srcdir, kmadb, minscore::Int=100)
-    mkdir(dstdir)
-    pairs = get_fastqs(srcdir)
-    Threads.@threads for (fw, rv) in pairs
-        filter_fastq(dstdir, srcdir, fw, rv, kmadb, minscore)
+if abspath(PROGRAM_FILE) == @__FILE__
+    @main function anonymize(dstdir, srcdir, kmadb, minscore::Int=100)
+        _anonymize(dstdir, srcdir, kmadb, minscore)
     end
 end

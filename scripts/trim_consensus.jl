@@ -49,7 +49,7 @@ function remove_primers(seq::NucleotideSeq, primers::Vector{<:Tuple{String, Nucl
     return seq
 end
 
-function main(primerpath::String, consensuspath::String, output::String, minlength::Int)
+function trim_consensus(primerpath::String, consensuspath::String, output::String, minlength::Int)
     primers = load_primers(primerpath)
     header, seq = load_consensus(consensuspath)
 
@@ -65,10 +65,12 @@ function main(primerpath::String, consensuspath::String, output::String, minleng
     
 end 
 
-if length(ARGS) != 4
-    error("Usage: julia trim_consensus.jl primers.fna consensus.fna output.fna minlength")
-end
-minlength = parse(Int, ARGS[4])
-minlength < 1 && error("Minlength must be one")
+if abspath(PROGRAM_FILE) == "@__FILE__"
+    if length(ARGS) != 4
+        error("Usage: julia trim_consensus.jl primers.fna consensus.fna output.fna minlength")
+    end
+    minlength = parse(Int, ARGS[4])
+    minlength < 1 && error("Minlength must be one")
 
-main(ARGS[1], ARGS[2], ARGS[3], minlength)
+    trim_consensus(ARGS[1], ARGS[2], ARGS[3], minlength)
+end
