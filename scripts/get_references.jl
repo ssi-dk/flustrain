@@ -1,10 +1,12 @@
+# This script is used to re-build the ref directory.
+# To use this, install cd-hit, and get the influenza database from NCBI.
+# They have an FTP link. I did this 2021-01-21
+
 using FASTX
 using BioSequences
 using ErrorTypes
 using Transducers
 
-# To use this, install cd-hit, and get the influenza database from NCBI.
-# They have an FTP link. I did this 2021-01-21
 
 ##### CLEAN THE DATA
 

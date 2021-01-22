@@ -43,7 +43,9 @@ end
 
 function load_consensus(path::String)
     open(FASTA.Reader, path) do reader
-        record, _ = iterate(reader)
+        itval = iterate(reader)
+        itval === nothing && return nothing
+        record, _ = itval
         seq = FASTA.sequence(LongDNASeq, record)
         header = get_header(record)
         iterate(reader) === nothing || error("Multiple records in file $path")
@@ -64,19 +66,25 @@ function remove_primers(seq::NucleotideSeq, primers::Vector{<:Tuple{String, Nucl
 end
 
 function trim_consensus(primerpath::String, consensuspath::String, output::String, minlength::Int)
+    cons = load_consensus(consensuspath)
+    
+    # If no consensus input
+    if isnothing(cons)
+        touch(output)
+        return
+    end
+    
+    # Else, actually do work
+    header, seq = cons
     primers = load_primers(primerpath)
-    header, seq = load_consensus(consensuspath)
-
     if !isempty(primers)
         seq = remove_primers(seq, primers, minlength)
         seq = remove_primers(reverse_complement(seq), primers, minlength)
         seq = reverse_complement(seq)
     end
-
     open(FASTA.Writer, output) do writer
         write(writer, FASTA.Record(header, seq))
-    end 
-    
+    end
 end 
 
 if abspath(PROGRAM_FILE) == @__FILE__

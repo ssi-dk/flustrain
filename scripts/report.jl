@@ -2,6 +2,10 @@ using FASTX
 using BioSequences
 using CodecZlib
 
+# Todo:
+# Depth should also include deletions
+# Depth should only begin from trimmed
+
 function get_depth(path::AbstractString)
     reference = DNA[]
     depths = UInt32[]
@@ -13,7 +17,10 @@ function get_depth(path::AbstractString)
         for fields in (split(strip) for strip in stripped if !isempty(strip))
             nucleotide = convert(DNA, first(first(fields)))
             nucleotide == DNA_Gap && continue
-            push!(depths, sum(x -> parse(UInt32, x), @view fields[2:6]))
+
+            # A, C, G, T and also -, but not N
+            depth = sum(x -> parse(UInt32, x), @view fields[2:5]) + parse(UInt32, fields[7])
+            push!(depths, depth)
             push!(reference, nucleotide)
         end
         (depths, LongDNASeq(reference))

@@ -155,6 +155,20 @@ def byte_iterfasta(filehandle, comment=b'#'):
 
     yield FastaEntry(header, bytearray().join(buffer))
 
+def try_first_rec(path):
+    with open(path, "rb") as file:
+        try:
+            record = next(byte_iterfasta(file))
+        except StopIteration:
+            record = None
+    
+    return record
+
+def touch_files(paths):
+    for path in paths:
+        with open(path, "w") as file:
+            pass
+
 def cat_fasta(outpath, inpaths):
     with open(outpath, "w") as outfile:
         for inpath in inpaths:

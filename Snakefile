@@ -122,6 +122,8 @@ rule extract_orf:
 # REFERENCE-ONLY PART OF PIPELINE
 #################################
 # We use k=14 because we sometimes have very small reads.
+# Since we don't re-calculate this index for every run, we can't toggle
+# the k value depending on the read length config.
 rule index_ref:
     input: REFDIR + "/{segment}.fna"
     output:
@@ -132,7 +134,10 @@ rule index_ref:
     params:
         outpath=REFOUTDIR + "/{segment}",
     log: "log/kma_ref/{segment}.log"
-    shell: "kma index -k 14 -i {input} -o {params.outpath} 2> {log}"
+    # We want a high K for finding the template (k_t), because we just want
+    # an approximate result to get the best template.
+    # Within a template, we want to be more accurate, so we use a smaller k_i.
+    shell: "kma index -k_t 16 -k_i 8 -i {input} -o {params.outpath} 2> {log}"
 
 """ TODO: Create ref tree for each "close" group of refs.
 rule reference_iqtree:
@@ -160,7 +165,7 @@ rule adapterremoval:
         discarded='trim/{basename}/{basename}.discarded.gz',
         single='trim/{basename}/{basename}.singleton.truncated.gz',
         fw='trim/{basename}/{basename}.pair1.truncated.gz',
-        rv='trim/{basename}/{basename}.pair2.truncated.gz'
+        rv='trim/{basename}/{basename}.pair2.truncated.gz',
     log: 'log/trim/{basename}.log'
     params:
         basename="trim/{basename}/{basename}"
@@ -207,10 +212,6 @@ rule initial_kma_map:
         "kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
         "-t {threads} -Sparse 2> {log}"
 
-def kma_map_index(wc):
-    index = tools.get_best_subject(f"aln/{wc.basename}/{wc.segment}.spa")[1]
-    return index if index is not None else 1
-
 # Possibly add -ref_fsa to disallow gaps and -dense to disallow insertions
 # Align to only the best template found by initial mapping round
 rule kma_map:
@@ -220,13 +221,12 @@ rule kma_map:
         index=rules.index_ref.output,
         spa=rules.initial_kma_map.output
     output:
-        mat="aln/{basename}/{segment,[A-Z0-9]+}.mat.gz",
         res="aln/{basename}/{segment,[A-Z0-9]+}.res",
         fsa="aln/{basename}/{segment,[A-Z0-9]+}.fsa"
     params:
         db=REFOUTDIR + "/{segment}", # same as index_reffile param
         outbase="aln/{basename}/{segment}",
-        refindex=kma_map_index
+        subject=lambda wc: tools.get_best_subject(f"aln/{wc.basename}/{wc.segment}.spa")[1]
     log: "log/aln/{basename}_{segment}.log"
     threads: 2
     # This is a run command, because the comamdn cannot be evaluated until
@@ -234,12 +234,72 @@ rule kma_map:
     # If gapopen is default, it will lead to totally absurd alignments. Perhaps
     # setting open/ext/m/mm be -5/-1/1/-3 will lead to better results still?
     run:
-        shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-        "-t {threads} -k 16 -gapopen -5 -nf -matrix -Mt1 {params.refindex} 2> {log}")
+        if params.subject is None:
+            tools.touch_files(output)
+        else:
+            shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
+            "-t {threads} -gapopen -5 -nf -Mt1 " + str(params.subject) + " 2> {log}")
+
+# In our current lab setup, we use primers to amplify our influeza segments. But these do not have the
+# proper sequence
+rule remove_primers:
+    input:
+        con=rules.kma_map.output.fsa,
+        primers=f"{SNAKEDIR}/ref/primers.fna"
+    output: "seqs/{basename}/{segment}.trimmed.fna"
+    log: "log/consensus/remove_primers_{basename}_{segment}.txt"
+    params:
+        scriptpath=f"{SNAKEDIR}/scripts/trim_consensus.jl",
+        minmatches=6
+    run:
+        shell("julia {params.scriptpath} {input.primers} {input.con} {output} {params.minmatches} > {log}")
+
+# We now re-map to the created consensus sequence in order to accurately
+# estimate depths and coverage, and get a more reliable assembly seq.
+rule index_consensus:
+    input: rules.remove_primers.output
+    output:
+        comp="seqs/{basename}/{segment,[a-zA-Z0-9]+}.comp.b",
+        name="seqs/{basename}/{segment,[a-zA-Z0-9]+}.name",
+        length="seqs/{basename}/{segment,[a-zA-Z0-9]+}.length.b",
+        seq="seqs/{basename}/{segment,[a-zA-Z0-9]+}.seq.b"
+    params:
+        outpath="seqs/{basename}/{segment}"
+    log: "log/seqs/kma_index_{basename}_{segment}.log"
+    run:
+        rec = tools.try_first_rec(input[0])
+        if rec is None or len(rec) < 50:
+            tools.touch_files(output)
+        else:
+            shell("kma index -i {input} -o {params.outpath} 2> {log}")
+
+# And now we KMA map top that index again
+rule final_kma_map:
+    input: 
+        fw='trim/{basename}/{basename}.pair1.truncated.gz',
+        rv='trim/{basename}/{basename}.pair2.truncated.gz',
+        index=rules.index_consensus.output
+    output:
+        mat="seqs/{basename}/{segment,[A-Z0-9]+}.mat.gz",
+        res="seqs/{basename}/{segment,[A-Z0-9]+}.res",
+        fsa="seqs/{basename}/{segment,[A-Z0-9]+}.fsa"
+    params:
+        db="seqs/{basename}/{segment}",
+        outbase="seqs/{basename}/{segment}",
+        lengthfile="seqs/{basename}/{segment,[a-zA-Z0-9]+}.length.b"
+    log: "log/seqs/kma_map_{basename}_{segment}.log"
+    threads: 2
+    run:
+        nbytes = len(open(params.lengthfile, "rb").read())
+        if nbytes < 5:
+            tools.touch_files(output)
+        else:
+            shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
+            "-t {threads} -gapopen -5 -nf -matrix 2> {log}")
 
 rule move_consensus:
-    input: "aln/{basename}/{segment}.fsa"
-    output: "consensus/{basename}/{segment}.untrimmed.fna"
+    input: "seqs/{basename}/{segment}.fsa"
+    output: "consensus/{basename}/{segment}.fna"
     run:
         with open(input[0], "rb") as file:
             try:
@@ -251,24 +311,10 @@ rule move_consensus:
         with open(output[0], "w") as file:
             print(consensus.format(), file=file)
 
-# In our current lab setup, we use primers to amplify our influeza segments. But these do not have the
-# proper sequence
-rule remove_primers:
-    input:
-        con=rules.move_consensus.output,
-        primers=f"{SNAKEDIR}/ref/primers.fna"
-    output: "consensus/{basename}/{segment}.fna"
-    log: "log/consensus/remove_primers_{basename}_{segment}.txt"
-    params:
-        scriptpath=f"{SNAKEDIR}/scripts/trim_consensus.jl",
-        minmatches=6
-    run:
-        shell("julia {params.scriptpath} {input.primers} {input.con} {output} {params.minmatches} > {log}")
-
 rule create_report:
     input:
         con=expand("consensus/{{basename}}/{segment}.fna", segment=SEGMENTS),
-        mat=expand("aln/{{basename}}/{segment}.mat.gz", segment=SEGMENTS)
+        mat=expand("seqs/{{basename}}/{segment}.mat.gz", segment=SEGMENTS)
     output:
         acc="consensus/{basename}/accepted.txt",
         rep="consensus/{basename}/report.txt",
