@@ -28,23 +28,19 @@ def get_depth(filename):
 report_file = open(snakemake.output[0], "w")
 accepted_file = open(snakemake.output[1], "w")
 consensuses = dict()
-subtypes = dict()
 accepted = dict()
 
-kinds = [snakemake.input.con, snakemake.input.mat, snakemake.input.sub]
-for (conpath, matpath, subpath) in zip(*[sorted(i) for i in kinds]):
+kinds = [snakemake.input.con, snakemake.input.mat]
+for (conpath, matpath) in zip(*[sorted(i) for i in kinds]):
     gene, _ = os.path.splitext(os.path.basename(conpath))
-    with open(subpath) as file:
-        subtype = next(file).strip()
 
     with open(conpath, "rb") as file:
         consensus = next(tools.byte_iterfasta(file))
 
     consensuses[gene] = consensus
-    subtypes[gene] = subtype
     accepted[gene] = True
 
-    print(f"{gene}:\t{subtypes[gene]} ", file=report_file, end="")
+    print(f"{gene}: ", file=report_file, end="")
 
     if len(consensus) == 0:
         print("", file=report_file)
@@ -80,19 +76,6 @@ for (conpath, matpath, subpath) in zip(*[sorted(i) for i in kinds]):
     inaccurate = sum(1 for i in consensus.sequence[TERMINAL:-TERMINAL] if i in lowercases)
     if inaccurate > 0:
         print(f"\tInaccurate bases (excluding terminals): {inaccurate}/{len(consensus.sequence) - 2*TERMINAL}", file=report_file)
-        accepted[gene] = False
-
-# Check that all subtypes is the same:
-subtype_set = set(subtypes.values())
-if len(set(subtype_set)) > 1:
-    bysubtype = defaultdict(list)
-    for (gene, subtype) in subtypes.items():
-        bysubtype[subtype].append(gene)
-    print("\nDIFFERING SUBTYPES:", file=report_file)
-    for (subtype, genes) in bysubtype.items():
-        print(f"\t{subtype}: {','.join(genes)}", file=report_file)
-
-    for gene in subtypes:
         accepted[gene] = False
 
 print("", file=report_file)

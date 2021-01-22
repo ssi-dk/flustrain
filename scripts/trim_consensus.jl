@@ -1,6 +1,20 @@
 using FASTX
 using BioSequences
 
+function get_header(record::FASTA.Record)
+    emptyid = isempty(record.identifier)
+    emptydesc = isempty(record.description)
+    if (emptyid & emptydesc)
+        return ""
+    elseif emptydesc
+        return String(record.data[record.identifier])
+    elseif emptyid
+        return String(record.data[record.description])
+    else
+        return String(record.data[first(record.identifier):last(record.description)])
+    end
+end
+
 function is_possibility(needle::NucleotideSeq, haystack::NucleotideSeq)
     @inbounds for i in eachindex(needle)
         iscompatible(needle[i], haystack[i]) || return false
@@ -23,7 +37,7 @@ end
 
 function load_primers(path::String)
     open(FASTA.Reader, path) do reader
-        map(record -> (FASTA.header(record), FASTA.sequence(LongDNASeq, record)), reader)
+        map(record -> (get_header(record), FASTA.sequence(LongDNASeq, record)), reader)
     end
 end
 
@@ -31,7 +45,7 @@ function load_consensus(path::String)
     open(FASTA.Reader, path) do reader
         record, _ = iterate(reader)
         seq = FASTA.sequence(LongDNASeq, record)
-        header = FASTA.header(record)
+        header = get_header(record)
         iterate(reader) === nothing || error("Multiple records in file $path")
         (header, seq)
     end
@@ -65,7 +79,7 @@ function trim_consensus(primerpath::String, consensuspath::String, output::Strin
     
 end 
 
-if abspath(PROGRAM_FILE) == "@__FILE__"
+if abspath(PROGRAM_FILE) == @__FILE__
     if length(ARGS) != 4
         error("Usage: julia trim_consensus.jl primers.fna consensus.fna output.fna minlength")
     end

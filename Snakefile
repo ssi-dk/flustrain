@@ -1,39 +1,3 @@
-"""
-To do:
-# IMPROVE REPORT CODE
-# Make two distinct output dirs: One containing "refoutput", outputs derived
-# only from non-FASTQ files, i.e. the references
-
-Make a gathered resistance_report.txt
-
-* Udtræk Excel ark fra BioNumerics som CSV for en kørsel
-* Search beginning of basename in the LIMSnr field
-* Get the associated "key"
-* For all accepted consensus, for each gene, output a single FASTA file
-  with the key as header, and the sequence
-
-  Human er KUN dem med LIMS numre (accession numre) (not those with V)
-
-  * Upload to GISAID
-  * Add information to BioNumerics
-  *
-
-  fasta header must be key to import to bionumerics
-  multiple seqs of same gene can be imported in one go, but not different genes
-
-  file -> import -> fasta from text file -> browse -> pick right "experiment"
-
-  Do not pick FASTA from BioNumerics, instead extract metadata from bionumerics,
-  then write a program to extract the data
-
-  Add to bionumerics: SeqCharacterisation (clade), Resistant (yes/no),
-  Resistance Mutations (e.g. "K12Y, M19A")
-
-
-  ------
-  Send HA consensus seq for #59 EISN to Ramona
-"""
-
 import sys
 import os
 import itertools as it
@@ -42,18 +6,6 @@ SNAKEDIR = os.path.dirname(workflow.snakefile)
 sys.path.append(os.path.join(SNAKEDIR, "scripts"))
 import tools
 
-# Datadir should look like this:
-# ref/
-#     H1N1/
-#         HA.ref.fna (not including stop)
-#         HA.all.fna
-#         NA.ref.fna (not including stop)
-#         NA.all.fna
-#     ...
-#     reads/
-#         XXXXXX_1.fq.gz
-#         XXXXXX_2.fq.gz
-#         ...
 
 ######################################################
 # GLOBAL CONSTANTS
@@ -61,36 +13,29 @@ import tools
 if "readdir" not in config:
     raise KeyError("You must supply absolute read path: '--config readdir=/path/to/reads'")
 
+if "refset" not in config:
+    raise KeyError("You must supply name of reference set: '--config refset=swine'")
+
 READDIR = config["readdir"]
 READ_PAIRS = tools.get_read_pairs(READDIR)
 BASENAMES = sorted(READ_PAIRS.keys())
 
-REFDIR = os.path.join(SNAKEDIR, "ref")
-REFOUTDIR = os.path.join(SNAKEDIR, "refout")
-SUBTYPES = set(next(os.walk(REFDIR))[1])
-if len(SUBTYPES) < 1:
-    raise ValueError("Must specify at least one subtype in data directory")
+REFDIR = os.path.join(SNAKEDIR, "ref", config["refset"])
+if not os.path.isdir(REFDIR):
+    raise NotADirectoryError(f"Could not find reference directory: '{REFDIR}'")
 
-allsegments = []
-for subtype in SUBTYPES:
-    filenames = os.listdir(os.path.join(REFDIR, subtype))
-    sortedsegments = sorted([fn.partition('.')[0] for fn in filenames if fn.endswith(".ref.fna")])
-    allsegments.append((subtype, sortedsegments))
+REFOUTDIR = os.path.join(SNAKEDIR, "refout", config["refset"])
 
-for (subtype, segments) in allsegments[1:]:
-    if segments != allsegments[0][1]:
-        raise ValueError("Subtype {} does not have the same reference segments as {}".format(subtype, allsegments[0][0]))
+# We have to create these directories either in a rule or outside the DAG to not
+# mess up the DAG.
+if not os.path.isdir(os.path.join(SNAKEDIR, "refout")):
+    os.mkdir(os.path.join(SNAKEDIR, "refout"))
 
-SEGMENTS = allsegments[0][1]
+if not os.path.isdir(os.path.join(SNAKEDIR, "refout", config["refset"])):
+    os.mkdir(os.path.join(SNAKEDIR, "refout", config["refset"]))
 
-CPUS = os.cpu_count()
-
-for subtype in SUBTYPES:
-    for segment in SEGMENTS:
-        path = REFDIR + "/{}/{}.all.fna".format(subtype, segment)
-        if not os.path.exists(path):
-            with open(path, "w") as file:
-                pass
+SEGMENTS = sorted([fn.rpartition('.')[0] for fn in os.listdir(REFDIR)
+    if fn.endswith(".fna")])
 
 ######################################################
 # Start of pipeline
@@ -117,18 +62,20 @@ def done_input(wildcards):
         with open(f"consensus/{basename}/accepted.txt") as accepted_file:
             accepted = set(filter(None, map(str.strip, accepted_file)))
 
-            # Add phylogeny of selected genes
-            for phylogene in ["HA"]:
-                if phylogene in accepted:
-                    inputs.append(f"phylogeny/{basename}/{phylogene}.treefile")
+            # Add phylogeny of selected segments
+            """
+            for phylosegment in ["HA"]:
+                if phylosegment in accepted:
+                    inputs.append(f"phylogeny/{basename}/{phylosegment}.treefile")
 
-            # Add resistance of selected genes.
-            for resistancegene in ["NA"]:
-                with open(f"consensus/{basename}/{resistancegene}.subtype") as file:
+            # Add resistance of selected segments.
+            for resistancesegment in ["NA"]:
+                with open(f"consensus/{basename}/{resistancesegment}.subtype") as file:
                     subtype = next(file).strip()
 
-                if resistancegene in accepted and subtype in ("H1N1", "H3N2"):
-                    inputs.append(f"consensus/{basename}/{resistancegene}.resistance.txt")
+                if resistancesegment in accepted and subtype in ("H1N1", "H3N2"):
+                    inputs.append(f"consensus/{basename}/{resistancesegment}.resistance.txt")
+            """
 
     return inputs
 
@@ -174,53 +121,33 @@ rule extract_orf:
 #################################
 # REFERENCE-ONLY PART OF PIPELINE
 #################################
-# First we do this so we have an "pure subtype" clade.
-rule cat_within_subtype:
-    input:
-        ref=REFDIR + "/{subtype}/{gene}.ref.fna",
-        all=REFDIR + "/{subtype}/{gene}.all.fna"
-    output: REFOUTDIR + "/{subtype}/{gene}.cat.fna"
-    run:
-        tools.cat_fasta(output[0], [input.ref, input.all])
-
-rule cat_all_subtypes:
-    input: expand(REFOUTDIR + "/{subtype}/{{gene}}.cat.fna", subtype=SUBTYPES),
-    output:
-        pan=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.fna",
-        map=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.map.txt"
-    run:
-        with open(output[0], "w") as panfile, open(output[1], "w") as mapfile:
-            for subtype in SUBTYPES:
-                path = REFOUTDIR + "/{}/{}.cat.fna".format(subtype, wildcards.gene)
-                with open(path, "rb") as infile:
-                    for record in tools.byte_iterfasta(infile):
-                        print(record.format(), file=panfile)
-                        print(record.header, subtype, sep='\t', file=mapfile)
-
 # We use k=14 because we sometimes have very small reads.
-rule index_panfile:
-    input: rules.cat_all_subtypes.output.pan
+rule index_ref:
+    input: REFDIR + "/{segment}.fna"
     output:
-        comp=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.comp.b",
-        name=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.name",
-        length=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.length.b",
-        seq=REFOUTDIR + "/pan/{gene,[A-Z0-9]+}.seq.b"
-    params: REFOUTDIR + "/pan/{gene}"
-    log: "log/kma_ref/{gene}.log"
-    shell: "kma index -k 14 -i {input} -o {params} 2> {log}"
-
-rule reference_iqtree:
-    input: REFOUTDIR + "/{subtype}/{gene}.cat.aln.fna"
-    output: REFOUTDIR + "/{subtype}/{gene}.contree"
+        comp=REFOUTDIR + "/{segment,[a-zA-Z0-9]+}.comp.b",
+        name=REFOUTDIR + "/{segment,[a-zA-Z0-9]+}.name",
+        length=REFOUTDIR + "/{segment,[a-zA-Z0-9]+}.length.b",
+        seq=REFOUTDIR + "/{segment,[a-zA-Z0-9]+}.seq.b"
     params:
-        pre=REFOUTDIR + "/{subtype}/{gene}",
+        outpath=REFOUTDIR + "/{segment}",
+    log: "log/kma_ref/{segment}.log"
+    shell: "kma index -k 14 -i {input} -o {params.outpath} 2> {log}"
+
+""" TODO: Create ref tree for each "close" group of refs.
+rule reference_iqtree:
+    input: REFOUTDIR + "/{subtype}/{segment}.cat.aln.fna"
+    output: REFOUTDIR + "/{subtype}/{segment}.contree"
+    params:
+        pre=REFOUTDIR + "/{subtype}/{segment}",
         bootstrap=1000,
         boot_iter=2500,
         model="HKY+G2" # just pick a model to be consistent
     threads: 2
-    log: "log/iqtree/{subtype}/{gene}.log"
+    log: "log/iqtree/{subtype}/{segment}.log"
     shell: "iqtree -s {input} -pre {params.pre} -nt {threads} -m {params.model} "
            "-nm {params.boot_iter} -bb {params.bootstrap} > {log}"
+"""
 
 ############################
 # CONSENSUS PART OF PIPELINE
@@ -269,19 +196,19 @@ rule initial_kma_map:
         # the trimmed files before FASTQC, since it can't see across the checkpoint
         # and will believe there is no more use of the trimmed files.
         fastqc = rules.fastqc.output,
-        index=rules.index_panfile.output
-    output: "aln/{basename}/{gene,[A-Z0-9]+}.spa"
+        index=rules.index_ref.output
+    output: "aln/{basename}/{segment,[A-Z0-9]+}.spa"
     params:
-        db=REFOUTDIR + "/pan/{gene}", # same as index_panfile param
-        outbase="aln/{basename}/{gene}"
+        db=REFOUTDIR + "/{segment}", # same as index_reffile param
+        outbase="aln/{basename}/{segment}"
     threads: 2
-    log: "log/aln/{basename}_{gene}.initial.log"
+    log: "log/aln/{basename}_{segment}.initial.log"
     shell:
         "kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
         "-t {threads} -Sparse 2> {log}"
 
 def kma_map_index(wc):
-    index = tools.get_best_subject(f"aln/{wc.basename}/{wc.gene}.spa")[1]
+    index = tools.get_best_subject(f"aln/{wc.basename}/{wc.segment}.spa")[1]
     return index if index is not None else 1
 
 # Possibly add -ref_fsa to disallow gaps and -dense to disallow insertions
@@ -290,17 +217,17 @@ rule kma_map:
     input:
         fw='trim/{basename}/{basename}.pair1.truncated.gz',
         rv='trim/{basename}/{basename}.pair2.truncated.gz',
-        index=rules.index_panfile.output,
+        index=rules.index_ref.output,
         spa=rules.initial_kma_map.output
     output:
-        mat="aln/{basename}/{gene,[A-Z0-9]+}.mat.gz",
-        res="aln/{basename}/{gene,[A-Z0-9]+}.res",
-        fsa="aln/{basename}/{gene,[A-Z0-9]+}.fsa"
+        mat="aln/{basename}/{segment,[A-Z0-9]+}.mat.gz",
+        res="aln/{basename}/{segment,[A-Z0-9]+}.res",
+        fsa="aln/{basename}/{segment,[A-Z0-9]+}.fsa"
     params:
-        db=REFOUTDIR + "/pan/{gene}", # same as index_panfile param
-        outbase="aln/{basename}/{gene}",
+        db=REFOUTDIR + "/{segment}", # same as index_reffile param
+        outbase="aln/{basename}/{segment}",
         refindex=kma_map_index
-    log: "log/aln/{basename}_{gene}.log"
+    log: "log/aln/{basename}_{segment}.log"
     threads: 2
     # This is a run command, because the comamdn cannot be evaluated until
     # the initial_kma_map, so printing it in a shell command will raise an error
@@ -308,39 +235,30 @@ rule kma_map:
     # setting open/ext/m/mm be -5/-1/1/-3 will lead to better results still?
     run:
         shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-        "-t {threads} -k 8 -gapopen -5 -nf -matrix -Mt1 {params.refindex} 2> {log}")
+        "-t {threads} -k 16 -gapopen -5 -nf -matrix -Mt1 {params.refindex} 2> {log}")
 
 rule move_consensus:
-    input:
-        con="aln/{basename}/{gene}.fsa",
-        map=REFOUTDIR + "/pan/{gene}.map.txt"
-    output:
-        con="consensus/{basename}/{gene}.untrimmed.fna",
-        sub="consensus/{basename}/{gene}.subtype"
+    input: "aln/{basename}/{segment}.fsa"
+    output: "consensus/{basename}/{segment}.untrimmed.fna"
     run:
         with open(input[0], "rb") as file:
             try:
                 consensus = next(tools.byte_iterfasta(file))
-                subtype = tools.get_subtype(input.map, consensus.header)
             except StopIteration:
                 consensus = tools.FastaEntry("", bytearray())
-                subtype = None
 
-        with open(output.sub, "w") as file:
-            print(subtype, file=file)
-
-        consensus.header = "{}_{}".format(wildcards.basename, wildcards.gene)
-        with open(output.con, "w") as file:
+        consensus.header = "{}_{}".format(wildcards.basename, wildcards.segment)
+        with open(output[0], "w") as file:
             print(consensus.format(), file=file)
 
 # In our current lab setup, we use primers to amplify our influeza segments. But these do not have the
 # proper sequence
 rule remove_primers:
     input:
-        con=rules.move_consensus.output.con,
-        primers=f"{SNAKEDIR}/primers.fna"
-    output: "consensus/{basename}/{gene}.fna"
-    log: "log/consensus/remove_primers_{basename}_{gene}.txt"
+        con=rules.move_consensus.output,
+        primers=f"{SNAKEDIR}/ref/primers.fna"
+    output: "consensus/{basename}/{segment}.fna"
+    log: "log/consensus/remove_primers_{basename}_{segment}.txt"
     params:
         scriptpath=f"{SNAKEDIR}/scripts/trim_consensus.jl",
         minmatches=6
@@ -349,9 +267,8 @@ rule remove_primers:
 
 rule create_report:
     input:
-        con=expand("consensus/{{basename}}/{gene}.fna", gene=SEGMENTS),
-        mat=expand("aln/{{basename}}/{gene}.mat.gz", gene=SEGMENTS),
-        sub=expand("consensus/{{basename}}/{gene}.subtype", gene=SEGMENTS)
+        con=expand("consensus/{{basename}}/{segment}.fna", segment=SEGMENTS),
+        mat=expand("aln/{{basename}}/{segment}.mat.gz", segment=SEGMENTS)
     output:
         rep="consensus/{basename}/report.txt",
         acc="consensus/{basename}/accepted.txt"
@@ -380,37 +297,38 @@ rule plot_depths:
 # Later maybe I can just pick out the fitting subtype and run IQTREE on those
 # Actually maybe even just IQTREE on the reference then use that as a guide tree
 
+"""
 rule cat_orfs:
     input:
-        consensus="consensus/{basename}/{gene}.orf.faa",
-        fnas=expand(REFOUTDIR + "/{subtype}/{{gene}}.cat.orf.faa", subtype=SUBTYPES),
-        sub="consensus/{basename}/{gene}.subtype"
-    output: "phylogeny/{basename}/{gene,[A-Z0-9]+}.faa"
+        consensus="consensus/{basename}/{segment}.orf.faa",
+        fnas=expand(REFOUTDIR + "/{subtype}/{{segment}}.cat.orf.faa", subtype=SUBTYPES),
+        sub="consensus/{basename}/{segment}.subtype"
+    output: "phylogeny/{basename}/{segment,[A-Z0-9]+}.faa"
     run:
         with open(input.sub) as file:
             subtype = next(file).strip()
 
-        tools.cat_fasta(output[0], [f"{REFOUTDIR}/{subtype}/{wildcards.gene}.cat.orf.faa", input.consensus])
+        tools.cat_fasta(output[0], [f"{REFOUTDIR}/{subtype}/{wildcards.segment}.cat.orf.faa", input.consensus])
 
 def get_iqtree_constraint(wildcards):
-    with open(f"consensus/{wildcards.basename}/{wildcards.gene}.subtype") as file:
+    with open(f"consensus/{wildcards.basename}/{wildcards.segment}.subtype") as file:
         subtype = next(file).strip()
 
-    return "{}/{}/{}.contree".format(REFOUTDIR, subtype, wildcards.gene)
+    return "{}/{}/{}.contree".format(REFOUTDIR, subtype, wildcards.segment)
 
 rule iqtree:
     input:
-        aln="phylogeny/{basename}/{gene}.aln.faa",
+        aln="phylogeny/{basename}/{segment}.aln.faa",
         con=get_iqtree_constraint,
-        sub="consensus/{basename}/{gene}.subtype"
-    output: "phylogeny/{basename}/{gene,[A-Z0-9]+}.treefile"
+        sub="consensus/{basename}/{segment}.subtype"
+    output: "phylogeny/{basename}/{segment,[A-Z0-9]+}.treefile"
     params:
-        pre="phylogeny/{basename}/{gene}",
+        pre="phylogeny/{basename}/{segment}",
         bootstrap=1000,
         boot_iter=2500,
         model="FLU+G2"
     threads: 2
-    log: "log/iqtree/phylogeny/{basename}_{gene}.log"
+    log: "log/iqtree/phylogeny/{basename}_{segment}.log"
     shell: "iqtree -s {input.aln} -pre {params.pre} -nt {threads} -m {params.model} "
            "-nm {params.boot_iter} -bb {params.bootstrap} -g {input.con} > {log}"
 
@@ -418,25 +336,26 @@ rule iqtree:
 # MUTATIONS PART OF PIPELINE
 ############################
 rule copy_ref:
-    input: REFDIR + "/{subtype}/{gene}.ref.fna"
-    output: REFOUTDIR + "/{subtype}/{gene}.ref.fna"
+    input: REFDIR + "/{subtype}/{segment}.ref.fna"
+    output: REFOUTDIR + "/{subtype}/{segment}.ref.fna"
     shell: "cp {input} {output}"
 
 rule cat_mutations:
     input:
-        con="consensus/{basename}/{gene}.orf.faa",
-        refs=expand(REFOUTDIR + "/{subtype}/{{gene}}.ref.orf.faa", subtype=SUBTYPES),
-        sub="consensus/{basename}/{gene}.subtype"
-    output: "consensus/{basename}/{gene}.cat.faa"
+        con="consensus/{basename}/{segment}.orf.faa",
+        refs=expand(REFOUTDIR + "/{subtype}/{{segment}}.ref.orf.faa", subtype=SUBTYPES),
+        sub="consensus/{basename}/{segment}.subtype"
+    output: "consensus/{basename}/{segment}.cat.faa"
     run:
         with open(input.sub) as file:
             subtype = next(file).strip()
-        inpath = f"{REFOUTDIR}/{subtype}/{wildcards.gene}.ref.orf.faa"
+        inpath = f"{REFOUTDIR}/{subtype}/{wildcards.segment}.ref.orf.faa"
         tools.cat_fasta(output[0], [inpath, input.con])
 
 rule mutations:
     input:
-        aln="consensus/{basename}/{gene}.cat.aln.faa",
-        sub="consensus/{basename}/{gene}.subtype"
-    output: "consensus/{basename}/{gene}.resistance.txt"
+        aln="consensus/{basename}/{segment}.cat.aln.faa",
+        sub="consensus/{basename}/{segment}.subtype"
+    output: "consensus/{basename}/{segment}.resistance.txt"
     script: "scripts/mutations.py"
+"""
