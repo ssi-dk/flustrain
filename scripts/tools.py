@@ -166,6 +166,9 @@ def raise_nonform_fastq(path):
     raise ValueError("FASTQ file {} not correctly formatted".format(filename))
 
 def get_read_pairs(directory):
+    if not os.path.isdir(directory):
+        raise FileNotFoundError(directory)
+
     try:
         filenames = sorted(next(os.walk(directory))[2])
     except StopIteration:

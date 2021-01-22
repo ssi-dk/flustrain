@@ -270,9 +270,14 @@ rule create_report:
         con=expand("consensus/{{basename}}/{segment}.fna", segment=SEGMENTS),
         mat=expand("aln/{{basename}}/{segment}.mat.gz", segment=SEGMENTS)
     output:
+        acc="consensus/{basename}/accepted.txt",
         rep="consensus/{basename}/report.txt",
-        acc="consensus/{basename}/accepted.txt"
-    script: "scripts/report.py"
+    params: f"{SNAKEDIR}/scripts/report.jl"
+    log: "log/report/{basename}"
+    run:
+        conpaths = ",".join(input.con)
+        matpaths = ",".join(input.mat)
+        shell(f"julia {{params}} {conpaths} {matpaths} {{output}} > {{log}}")
 
 checkpoint cat_reports:
     input: expand("consensus/{basename}/report.txt", basename=BASENAMES)
