@@ -12,13 +12,13 @@ using Transducers
 
 format_error(s) =  error("Unknown format: \"$s\"")
 function parse_name(s::Union{String, SubString})::Option{String}
-    isempty(s) && return nothing
+    isempty(s) && return none
 
     occursin(r"^Influenza [AB] [vV]irus", s) || format_error(s)
-    ncodeunits(s) == 17 && return nothing
+    ncodeunits(s) == 17 && return none
     rest = SubString(s, 18 + (codeunit(s, 18) == UInt(' ')):ncodeunits(s))
 
-    isempty(rest) && return nothing
+    isempty(rest) && return none
     rest2 = if codeunit(rest, 1) == UInt8('(') && codeunit(rest, ncodeunits(rest)) == UInt8(')')
         SubString(rest, 2:ncodeunits(rest)-1)
     else
@@ -32,7 +32,7 @@ function parse_name(s::Union{String, SubString})::Option{String}
         SubString(rest2, 1:ncodeunits(rest2) - ncodeunits(m.match))
     end
     
-    return Some(String(rest3))
+    return Thing(String(rest3))
 end
 
 function clean_data(io::IO, out::IO)
@@ -65,7 +65,7 @@ function clean_data(io::IO, out::IO)
 
         # Filter name
         nn = parse_name(name)
-        name = if is_error(nn)
+        name = if is_none(nn)
             ""
         else
             unwrap(nn)
@@ -82,7 +82,7 @@ function clean_data(io::IO, out::IO)
     end
 end
 
-open("/Users/jakobnissen/Downloads/INFLUENZA/genomeset.dat") do infile
+open("/Users/jakobnissen/Downloads/INFLUENZA/raw/genomeset.dat") do infile
     open("/Users/jakobnissen/Downloads/INFLUENZA/genomeset.filt.dat", "w") do outfile
         clean_data(infile, outfile)
     end
@@ -125,17 +125,17 @@ end
 Base.show(io::IO, s::SubType) = print(io, 'H', s.H, 'N', s.N)
 
 function parse_subtype(s::Union{String, SubString})::Option{SubType}
-    isempty(s) && return nothing
+    isempty(s) && return none
     m = match(r"^H(\d+)N(\d+)$", s)
     m === nothing && error("UNKNOWN SUBTYPE: $s")
-    Some(SubType(parse(UInt8, m[1]), parse(UInt8, m[2])))
+    Thing(SubType(parse(UInt8, m[1]), parse(UInt8, m[2])))
 end
 
 function parse_year(s::Union{String, SubString})::Option{Int}
-    isempty(s) && return nothing
+    isempty(s) && return none
     pos_slash_found = findfirst(isequal('/'), s)
     last_byte = pos_slash_found === nothing ? ncodeunits(s) : pos_slash_found - 1
-    return Some(parse(Int, SubString(s, 1:last_byte)))
+    return Thing(parse(Int, SubString(s, 1:last_byte)))
 end
 
 struct FluMeta
@@ -158,7 +158,7 @@ function parse_flumeta(s::Union{String, SubString})::Option{FluMeta}
     segment = Segment(fields[3])
     len = parse(Int, fields[7])
 
-    return Some(FluMeta(gi, host, segment, subtype, year, len, name))
+    return Thing(FluMeta(gi, host, segment, subtype, year, len, name))
 end
 
 parse_all(io::IO) = parse_all(eachline(io) |> Map(strip) |> Filter(!isempty))
@@ -167,7 +167,7 @@ function parse_all(lines)
     metas = FluMeta[]
     for (i, line) in enumerate(lines)
         opt = parse_flumeta(line)
-        is_error(opt) || push!(metas, unwrap(opt))
+        is_none(opt) || push!(metas, unwrap(opt))
     end
     metas
 end
@@ -199,6 +199,10 @@ fluseqs = FluSeq[]
 for record in records # all can be matched
     seq = get(by_id, record.gi, nothing)
     seq === nothing && continue
+
+    # Filter for Ns
+    count(isambiguous, seq) > 4 && continue
+
     push!(fluseqs, FluSeq(seq, record))
 end
 
@@ -217,7 +221,7 @@ for species in [avian, swine]
     end
 end
 
-# Now cluster for each
+# Now cluster for each. 95% identity.
 exec = "/Users/jakobnissen/miniconda3/envs/bioinfo/bin/cd-hit-est"
 for species in [avian, swine]
     Threads.@threads for segment in instances(Segment)
@@ -225,5 +229,13 @@ for species in [avian, swine]
         outpath = inpath * ".cdhit"
         command = `$exec -i $inpath -o $outpath -aS 0.9 -c 0.95`
         run(command)
+    end
+end
+
+for species in [avian, swine]
+    for segment in instances(Segment)
+        cp("processed/$species/$segment.fna.cdhit",
+        "/Users/jakobnissen/Documents/ssi/projects/flupipe/ref/$species/$segment.fna",
+        force=true)
     end
 end

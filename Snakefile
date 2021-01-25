@@ -137,7 +137,8 @@ rule index_ref:
     # We want a high K for finding the template (k_t), because we just want
     # an approximate result to get the best template.
     # Within a template, we want to be more accurate, so we use a smaller k_i.
-    shell: "kma index -k_t 16 -k_i 8 -i {input} -o {params.outpath} 2> {log}"
+    # Note: KMA speed is highly sensitive to k_i setting. k_i = 8 is very slow.
+    shell: "kma index -k_t 16 -k_i 10 -i {input} -o {params.outpath} 2> {log}"
 
 """ TODO: Create ref tree for each "close" group of refs.
 rule reference_iqtree:
@@ -241,7 +242,8 @@ rule kma_map:
             "-t {threads} -gapopen -5 -nf -Mt1 " + str(params.subject) + " 2> {log}")
 
 # In our current lab setup, we use primers to amplify our influeza segments. But these do not have the
-# proper sequence
+# proper sequence. We do this before the final mapping step in order to get well-defined
+# start and stop of the sequenced part for the last round of mapping.
 rule remove_primers:
     input:
         con=rules.kma_map.output.fsa,
@@ -337,9 +339,10 @@ checkpoint cat_reports:
                         print('\t', line, sep='', end='', file=outfile)
 
 rule plot_depths:
-    input: "aln/{basename}"
+    input: expand("seqs/{{basename}}/{segment}.mat.gz", segment=SEGMENTS)
     output: "depths/{basename}.pdf"
-    script: "scripts/plot.py"
+    params: f"{SNAKEDIR}/scripts/covplot.jl"
+    shell: "julia {params} {output} {input}"
 
 ############################
 # IQTREE PART OF PIPELINE

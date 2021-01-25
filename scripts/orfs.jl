@@ -29,7 +29,7 @@ function forward_orfs(seq::BioSequence{<:NucleicAcidAlphabet{2}})
     starts = (0, 0, 0)
     local mer
     local start
-    for outer mer in each(codon(Alphabet(seq)), seq)
+    @inbounds for outer mer in each(codon(Alphabet(seq)), seq)
         frame = mer.position % 3 + 1
         start = starts[frame]
         if isstop(mer.fw)

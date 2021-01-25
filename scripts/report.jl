@@ -2,9 +2,7 @@ using FASTX
 using BioSequences
 using CodecZlib
 
-# Todo:
-# Depth should also include deletions
-# Depth should only begin from trimmed
+const TERMINAL = 25
 
 function get_depth(path::AbstractString)
     reference = DNA[]
@@ -27,7 +25,10 @@ function get_depth(path::AbstractString)
     end
 end
 
-count_low_depths(x::Vector{<:Integer}) = count(i -> i < 10, x)
+# Depth naturally declines towards the ends of the template. This is not
+# necessarily a sign of bad sequencing. So I include the first and last 25 bp,
+# and check for depth < 25.
+count_low_depths(x::Vector{<:Integer}) = count(<(25), @view a[1+TERMINAL:end-TERMINAL])
 
 function count_insignificant_bases(rec::FASTA.Record)
     count(byte -> islowercase(Char(byte)), @view rec.data[rec.sequence])
@@ -78,13 +79,13 @@ function report_text(state::ConsensusState)::String
     state.ok && return first(lines)
 
     if !iszero(state.n_low_depth)
-        push!(lines, "\t$(state.n_low_depth) bases has depth < 10")
+        push!(lines, "\t$(state.n_low_depth) bases (excluding terminal $(TERMINAL)bp) has depth < 10")
     end
     if !iszero(state.n_ns)
         push!(lines, "\t$(state.n_ns) bases called as \"N\"")
     end
     if !iszero(state.n_insignificant)
-        push!(lines, "\t$(state.n_insignificant) basecalls without statistical significansce")
+        push!(lines, "\t$(state.n_insignificant) basecalls without statistical significance")
     end
     join(lines, '\n')
 end
