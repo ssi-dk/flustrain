@@ -16,6 +16,9 @@ if "readdir" not in config:
 if "refset" not in config:
     raise KeyError("You must supply name of reference set: '--config refset=swine'")
 
+if config["refset"] not in ["human", "swine", "avian"]:
+    raise KeyError("refset must be 'human', 'swine' or 'avian'")
+
 READDIR = config["readdir"]
 READ_PAIRS = tools.get_read_pairs(READDIR)
 BASENAMES = sorted(READ_PAIRS.keys())
@@ -36,6 +39,9 @@ if not os.path.isdir(os.path.join(SNAKEDIR, "refout", config["refset"])):
 
 SEGMENTS = sorted([fn.rpartition('.')[0] for fn in os.listdir(REFDIR)
     if fn.endswith(".fna")])
+
+# Only relevant for the human reference set with its fixed subtypes
+SUBTYPES = ["H1N1", "H3N2", "Victoria", "Yamagata"]
 
 ######################################################
 # Start of pipeline
@@ -61,6 +67,11 @@ def done_input(wildcards):
         inputs.append(f"depths/{basename}.pdf")
         with open(f"consensus/{basename}/accepted.txt") as accepted_file:
             accepted = set(filter(None, map(str.strip, accepted_file)))
+
+        # Add phylogeny - only for human viruses for which we have
+        # well defined subtypes. 
+        if config["refset"] == "human":
+            inputs.append(f"phylogeny/{basename}/HA.treefile")
 
             # Add phylogeny of selected segments
             """
@@ -89,13 +100,12 @@ rule all:
 rule mafft:
     input: "{dir}/{base}.{ext}"
     output: "{dir}/{base}.aln.{ext,faa|fna}"
-    log: "log/mafft/{dir}/{base}.{ext}.log"
-    shell: "mafft --auto {input} > {output} 2> {log}"
+    shell: "mafft --auto {input} > {output}"
 
 rule trim_alignment:
     input: "{dir}/{base}.aln.{ext}"
     output: "{dir}/{base}.aln.trimmed.{ext,faa|fna}"
-    script: "scripts/trim_all.py"
+    shell: "trimal -gt 0.9 -cons 60 -keepheader -keepseqs -in {input} -fasta -out {output}"
 
 rule translate:
     input: "{dir}/{base}.fna"
@@ -140,12 +150,25 @@ rule index_ref:
     # Note: KMA speed is highly sensitive to k_i setting. k_i = 8 is very slow.
     shell: "kma index -k_t 16 -k_i 10 -i {input} -o {params.outpath} 2> {log}"
 
-""" TODO: Create ref tree for each "close" group of refs.
+
+rule split_ref_subtype:
+    input: REFDIR + "/{segment}.fna"
+    output: expand(REFOUTDIR + "/{{segment}}_{subtype}.fna", subtype=SUBTYPES)
+    run:
+        with open(input[0], "rb") as infile:
+            records = list(tools.byte_iterfasta(infile))
+        
+        for subtype in SUBTYPES:
+            recs = [r for r in records if r.header.split('|')[1] == subtype]
+            with open(REFOUTDIR + f"/{wildcards.segment}_{subtype}.fna", "w") as file:
+                for record in recs:
+                    print(record.format(), file=file)
+
 rule reference_iqtree:
-    input: REFOUTDIR + "/{subtype}/{segment}.cat.aln.fna"
-    output: REFOUTDIR + "/{subtype}/{segment}.contree"
+    input: REFOUTDIR + "/{segment}_{subtype}.aln.trimmed.fna"
+    output: REFOUTDIR + "/{segment}_{subtype}.treefile"
     params:
-        pre=REFOUTDIR + "/{subtype}/{segment}",
+        pre=REFOUTDIR + "/{segment}_{subtype}",
         bootstrap=1000,
         boot_iter=2500,
         model="HKY+G2" # just pick a model to be consistent
@@ -153,7 +176,6 @@ rule reference_iqtree:
     log: "log/iqtree/{subtype}/{segment}.log"
     shell: "iqtree -s {input} -pre {params.pre} -nt {threads} -m {params.model} "
            "-nm {params.boot_iter} -bb {params.bootstrap} > {log}"
-"""
 
 ############################
 # CONSENSUS PART OF PIPELINE
@@ -347,12 +369,44 @@ rule plot_depths:
 ############################
 # IQTREE PART OF PIPELINE
 ############################
-# We probably only want to run IQ tree on the closest subsequences TBH.
-# Later maybe I can just pick out the fitting subtype and run IQTREE on those
-# Actually maybe even just IQTREE on the reference then use that as a guide tree
+
+def calc_subtype(wildcards):
+    with open(f"aln/{wildcards.basename}/{wildcards.segment}.spa") as file:
+        next(file) # skip header
+        return next(file).split('\t')[0].split('|')[1]
+
+rule cat_ref_consensus:
+    input:
+        consensus="consensus/{basename}/{segment}.fna",
+        refaln=expand(REFOUTDIR + "/{{segment}}_{subtype}.aln.trimmed.fna", subtype=SUBTYPES)
+    output: "phylogeny/{basename}/{segment}.cat.aln.trimmed.fna"
+    params: lambda wc: REFOUTDIR + f"/{wc.segment}_{calc_subtype(wc)}.aln.trimmed.fna"
+    log: "log/mafft/phylogeny/{basename}_{segment}.log"
+    run: shell("mafft --add {input.consensus} {params} > {output} 2> {log}")
+
+def iqtree_guide_tree(wildcards):
+    subtype = calc_subtype(wildcards)
+    return REFOUTDIR + f"/{wildcards.segment}_{subtype}.treefile"
+
+rule iqtree:
+    input:
+        consensus=rules.cat_ref_consensus.output,
+        guidetrees=expand(REFOUTDIR + "/{{segment}}_{subtype}.treefile", subtype=SUBTYPES)
+    output: "phylogeny/{basename}/{segment,[A-Z0-9]+}.treefile"
+    params:
+        pre="phylogeny/{basename}/{segment}",
+        bootstrap=1000,
+        boot_iter=2500,
+        model="HKY+G2",
+        guide=iqtree_guide_tree
+    threads: 2
+    log: "log/iqtree/phylogeny/{basename}_{segment}.log"
+    shell: "iqtree -s {input[0]} -pre {params.pre} -nt {threads} -m {params.model} "
+           "-nm {params.boot_iter} -bb {params.bootstrap} -g {params.guide} > {log}"
 
 """
-rule cat_orfs:
+rule cat
+_orfs:
     input:
         consensus="consensus/{basename}/{segment}.orf.faa",
         fnas=expand(REFOUTDIR + "/{subtype}/{{segment}}.cat.orf.faa", subtype=SUBTYPES),
@@ -370,21 +424,6 @@ def get_iqtree_constraint(wildcards):
 
     return "{}/{}/{}.contree".format(REFOUTDIR, subtype, wildcards.segment)
 
-rule iqtree:
-    input:
-        aln="phylogeny/{basename}/{segment}.aln.faa",
-        con=get_iqtree_constraint,
-        sub="consensus/{basename}/{segment}.subtype"
-    output: "phylogeny/{basename}/{segment,[A-Z0-9]+}.treefile"
-    params:
-        pre="phylogeny/{basename}/{segment}",
-        bootstrap=1000,
-        boot_iter=2500,
-        model="FLU+G2"
-    threads: 2
-    log: "log/iqtree/phylogeny/{basename}_{segment}.log"
-    shell: "iqtree -s {input.aln} -pre {params.pre} -nt {threads} -m {params.model} "
-           "-nm {params.boot_iter} -bb {params.bootstrap} -g {input.con} > {log}"
 
 ############################
 # MUTATIONS PART OF PIPELINE
