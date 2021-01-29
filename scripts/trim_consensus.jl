@@ -1,3 +1,5 @@
+# Purpose: Trim primers off consensus seq
+
 using FASTX
 using BioSequences
 

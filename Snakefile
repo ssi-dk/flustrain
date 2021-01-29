@@ -73,20 +73,7 @@ def done_input(wildcards):
         if config["refset"] == "human":
             inputs.append(f"phylogeny/{basename}/HA.treefile")
 
-            # Add phylogeny of selected segments
-            """
-            for phylosegment in ["HA"]:
-                if phylosegment in accepted:
-                    inputs.append(f"phylogeny/{basename}/{phylosegment}.treefile")
-
-            # Add resistance of selected segments.
-            for resistancesegment in ["NA"]:
-                with open(f"consensus/{basename}/{resistancesegment}.subtype") as file:
-                    subtype = next(file).strip()
-
-                if resistancesegment in accepted and subtype in ("H1N1", "H3N2"):
-                    inputs.append(f"consensus/{basename}/{resistancesegment}.resistance.txt")
-            """
+    # TODO: Add mutation scanning here.
 
     return inputs
 
@@ -235,8 +222,6 @@ rule initial_kma_map:
         "kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
         "-t {threads} -Sparse 2> {log}"
 
-# Possibly add -ref_fsa to disallow gaps and -dense to disallow insertions
-# Align to only the best template found by initial mapping round
 rule kma_map:
     input:
         fw='trim/{basename}/{basename}.pair1.truncated.gz',
@@ -252,10 +237,6 @@ rule kma_map:
         subject=lambda wc: tools.get_best_subject(f"aln/{wc.basename}/{wc.segment}.spa")[1]
     log: "log/aln/{basename}_{segment}.log"
     threads: 2
-    # This is a run command, because the comamdn cannot be evaluated until
-    # the initial_kma_map, so printing it in a shell command will raise an error
-    # If gapopen is default, it will lead to totally absurd alignments. Perhaps
-    # setting open/ext/m/mm be -5/-1/1/-3 will lead to better results still?
     run:
         if params.subject is None:
             tools.touch_files(output)
@@ -297,7 +278,7 @@ rule index_consensus:
         else:
             shell("kma index -i {input} -o {params.outpath} 2> {log}")
 
-# And now we KMA map top that index again
+# And now we KMA map to that index again
 rule final_kma_map:
     input: 
         fw='trim/{basename}/{basename}.pair1.truncated.gz',
@@ -373,6 +354,7 @@ rule plot_depths:
 def calc_subtype(wildcards):
     with open(f"aln/{wildcards.basename}/{wildcards.segment}.spa") as file:
         next(file) # skip header
+        # Headers are of format ISOLATE|SUBTYPE|SEGMENT|CLADE
         return next(file).split('\t')[0].split('|')[1]
 
 rule cat_ref_consensus:
@@ -405,8 +387,7 @@ rule iqtree:
            "-nm {params.boot_iter} -bb {params.bootstrap} -g {params.guide} > {log}"
 
 """
-rule cat
-_orfs:
+rule cat_orfs:
     input:
         consensus="consensus/{basename}/{segment}.orf.faa",
         fnas=expand(REFOUTDIR + "/{subtype}/{{segment}}.cat.orf.faa", subtype=SUBTYPES),

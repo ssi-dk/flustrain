@@ -181,7 +181,7 @@ def raise_nonform_fastq(path):
 
 def get_read_pairs(directory):
     if not os.path.isdir(directory):
-        raise FileNotFoundError(directory)
+        raise FileNotFoundError(f"Could not locate read dirctory: {os.path.abspath(directory)}")
 
     try:
         filenames = sorted(next(os.walk(directory))[2])
