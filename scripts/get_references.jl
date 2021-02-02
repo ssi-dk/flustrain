@@ -7,9 +7,82 @@ using BioSequences
 using ErrorTypes
 using Transducers
 
+@enum Segment::UInt8 begin
+    PB2
+    PB1
+    PA
+    HA
+    NP
+    NA
+    MP
+    NS
+end
+
+const EXPECTED_GENES = [1, 2, 2, 1, 1, 1, 2, 2]
+
+Segment(s::Union{String, SubString}) = Segment(parse(UInt8, s) - 0x01)
+
+#### LOAD IN ORF DATA from "influenza.dat"
+# Looks like one of these lines:
+# (gb|AB000613:4-731, 960)
+# gb|AB000721:710-1129
+# gb|AB266385:<1-755
+function parse_orf(s::AbstractString)::Option{Vector{UnitRange{Int}}}
+    # If it looks like gb|AB266090:<411->632, the ORF is not present
+    # in the reference, and we skip it
+    if occursin('>', s) || occursin('<', s)
+        return none
+    end
+
+    # Multiple ORFs in a gene makes them enclosed in brackets
+    s1 = strip(s, ['(', ')'])
+    p = findfirst(isequal(':'), s1)
+    p === nothing && return none
+    s2 = @view s1[p+1:ncodeunits(s1)]
+    orfstrings = split(s2, ", ")
+    result = UnitRange{Int}[]
+    for orfstring in orfstrings
+        p2 = findfirst(isequal('-'), orfstring)
+        # If it's not a range, it must be a single number
+        if p2 === nothing
+            start = parse(Int, orfstring)
+            push!(result, start:start)
+        else
+            start = parse(Int, @view orfstring[1:p2-1])
+            stop = parse(Int, orfstring[p2+1:ncodeunits(orfstring)])
+            push!(result, start:stop)
+        end
+    end
+
+    # For good measure, we check it's divisible by three to actually be
+    # an ORF which can encode a protein
+    iszero(mapreduce(length, +, result) % 3) || return none
+    return Thing(result)
+end
+
+# First col is the segment accession, fields 3, 5, 7 etc. are protein ORFS
+function load_orf_line(result::Vector, line::AbstractString)::Option{String}
+    fields = split(line, '\t')
+    length(fields) < 3 && return none
+    empty!(result)
+    for orf_field in fields[3:2:end]
+        push!(result, @?(parse_orf(orf_field)))
+    end
+    return Thing(String(first(fields)))
+end
+
+function load_orf_data(io::IO)
+    orfs = Dict{String, Vector{Vector{UnitRange{Int}}}}()
+    v = Vector{Vector{UnitRange{Int}}}()
+    for line in eachline(io)
+        maybe_key = load_orf_line(v, line)
+        is_none(maybe_key) && continue
+        orfs[unwrap(maybe_key)] = copy(v)
+    end
+    orfs
+end
 
 ##### CLEAN THE DATA
-
 format_error(s) =  error("Unknown format: \"$s\"")
 function parse_name(s::Union{String, SubString})::Option{String}
     isempty(s) && return none
@@ -35,7 +108,7 @@ function parse_name(s::Union{String, SubString})::Option{String}
     return Thing(String(rest3))
 end
 
-function clean_data(io::IO, out::IO)
+function clean_data(io::IO, out::IO, orf_dict::Dict{String})
     for line in (eachline(io) |> Filter(!isempty))
         fields = split(line, '\t')
         if length(fields) != 11
@@ -43,6 +116,12 @@ function clean_data(io::IO, out::IO)
             error()
         end
         gi, host, segment, subtype, country, year, len, name, age, gender, group = fields
+
+        # Skip any segment if it's not in the ORF dict OR if segment doesn't have
+        # the right number of genes
+        if !haskey(orf_dict, gi)
+            continue
+        end
 
         # Filter segment
         if !in(parse(Int, segment), 1:8)
@@ -82,9 +161,10 @@ function clean_data(io::IO, out::IO)
     end
 end
 
+orf_dict = open(load_orf_data, "/Users/jakobnissen/Downloads/INFLUENZA/raw/influenza.dat")
 open("/Users/jakobnissen/Downloads/INFLUENZA/raw/genomeset.dat") do infile
-    open("/Users/jakobnissen/Downloads/INFLUENZA/genomeset.filt.dat", "w") do outfile
-        clean_data(infile, outfile)
+    open("/Users/jakobnissen/Downloads/INFLUENZA/genomeset.filt2.dat", "w") do outfile
+        clean_data(infile, outfile, orf_dict)
     end
 end
 
@@ -103,19 +183,6 @@ function Species(s::Union{String, SubString})::Species
     s == "Avian" && return avian
     return other
 end
-
-@enum Segment::UInt8 begin
-    PB2
-    PB1
-    PA
-    HA
-    NP
-    NA
-    MP
-    NS
-end
-
-Segment(s::Union{String, SubString}) = Segment(parse(UInt8, s) - 0x01)
 
 struct SubType
     H::UInt8
