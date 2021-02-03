@@ -2,8 +2,11 @@ using Plots
 using CodecZlib
 
 function get_depth(path::AbstractString)
+    # If the file is empty (e.g. it was created by a touch op), 
+    # just return a small list of zeros
+    iszero(stat(path).size) && return zeros(UInt32, 10)
+    
     depths = UInt32[]
-
     open(path) do io
         lines = eachline(GzipDecompressorStream(io))
         iterate(lines) # skip header

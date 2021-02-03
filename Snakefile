@@ -51,15 +51,11 @@ ruleorder: translate > trim_alignment > mafft
 # We add the checkpoiint output here just to make sure the checkpoint is included
 # in the DAG
 def done_input(wildcards):
-    # Add report
-    inputs = ["report.txt"]
+    # Add report and the commit
+    inputs = ["report.txt", "commit.txt"]
     checkpoints.cat_reports.get()
 
-    for basename in BASENAMES:
-        # Add FASTQC report
-        for pair in (1, 2):
-            inputs.append(f"fastqc/{basename}/{basename}.pair{pair}.truncated_fastqc.html")
-        
+    for basename in BASENAMES: 
         # Add individual report
         inputs.append(f"consensus/{basename}/report.txt")
 
@@ -100,7 +96,8 @@ rule all:
 rule mafft:
     input: "{dir}/{base}.{ext}"
     output: "{dir}/{base}.aln.{ext,faa|fna}"
-    shell: "mafft --auto {input} > {output}"
+    threads: 4
+    shell: "mafft --thread {threads} --auto {input} > {output}"
 
 rule trim_alignment:
     input: "{dir}/{base}.aln.{ext}"
@@ -144,11 +141,11 @@ rule index_ref:
     params:
         outpath=REFOUTDIR + "/{segment}",
     log: "log/kma_ref/{segment}.log"
-    # We want a high K for finding the template (k_t), because we just want
-    # an approximate result to get the best template.
-    # Within a template, we want to be more accurate, so we use a smaller k_i.
-    # Note: KMA speed is highly sensitive to k_i setting. k_i = 8 is very slow.
-    shell: "kma index -k_t 16 -k_i 10 -i {input} -o {params.outpath} 2> {log}"
+    
+    # The pipeline is very sensitive to the value of k here.
+    # Too low means the mapping is excruciatingly slow,
+    # too high results in very poor mapping quality.
+    shell: "kma index -k 12 -i {input} -o {params.outpath} 2> {log}"
 
 
 rule split_ref_subtype:
@@ -180,50 +177,32 @@ rule reference_iqtree:
 ############################
 # CONSENSUS PART OF PIPELINE
 ############################
-rule adapterremoval:
+rule gitcommit:
+    output: "commit.txt"
+    params: SNAKEDIR
+    shell: "git -C {params} rev-parse --short HEAD > {output}"
+
+rule fastp:
     input:
         fw=lambda wildcards: READ_PAIRS[wildcards.basename][0],
         rv=lambda wildcards: READ_PAIRS[wildcards.basename][1],
     output:
-        discarded='trim/{basename}/{basename}.discarded.gz',
-        single='trim/{basename}/{basename}.singleton.truncated.gz',
-        fw='trim/{basename}/{basename}.pair1.truncated.gz',
-        rv='trim/{basename}/{basename}.pair2.truncated.gz',
-    log: 'log/trim/{basename}.log'
-    params:
-        basename="trim/{basename}/{basename}"
+        fw='trim/{basename}/fw.fq',
+        rv='trim/{basename}/rv.fq',
+        html='trim/{basename}/report.html',
+        json='trim/{basename}/report.json'
     threads: 2
     shell:
-        'AdapterRemoval '
-        # Input files
-        '--file1 {input.fw} --file2 {input.rv} '
-        # Output files
-        '--basename {params.basename} '
-        "2> {log} "
-        # Other parameters:
-        '--minlength 20 --trimns --trimqualities --minquality 20 '
-        '--qualitybase 33 --gzip --trimwindows 5 --threads {threads}'
-
-rule fastqc:
-    input: [rules.adapterremoval.output.fw, rules.adapterremoval.output.rv]
-    output:
-        fw='fastqc/{basename}/{basename}.pair1.truncated_fastqc.html',
-        rv='fastqc/{basename}/{basename}.pair2.truncated_fastqc.html',
-    log: 'log/fastqc/{basename}.log'
-    threads: 2
-    # Annoyingly, it prints "analysis complete" to stdout
-    shell: 'fastqc -t {threads} {input} -o fastqc/{wildcards.basename} 2> {log} > /dev/null'
+        'fastp -i {input.fw} -I {input.rv} '
+        '-o {output.fw} -O {output.rv} --html {output.html} --json {output.json} '
+        '--disable_adapter_trimming --trim_poly_g --cut_tail --low_complexity_filter '
+        '--complexity_threshold 50 --thread {threads}'
 
 # Do this to get the best template, -Sparse option is designed for this.
 rule initial_kma_map:
     input:
-        fw='trim/{basename}/{basename}.pair1.truncated.gz',
-        rv='trim/{basename}/{basename}.pair2.truncated.gz',
-        # We artificially add FASTQC here to move FASTQC up the dependency graph,
-        # such that it is completed before the checkpoint. Else, Snakemake will remove
-        # the trimmed files before FASTQC, since it can't see across the checkpoint
-        # and will believe there is no more use of the trimmed files.
-        fastqc = rules.fastqc.output,
+        fw=rules.fastp.output.fw,
+        rv=rules.fastp.output.rv,
         index=rules.index_ref.output
     output: "aln/{basename}/{segment,[A-Z0-9]+}.spa"
     params:
@@ -239,8 +218,8 @@ rule initial_kma_map:
 # Align to only the best template found by initial mapping round
 rule kma_map:
     input:
-        fw='trim/{basename}/{basename}.pair1.truncated.gz',
-        rv='trim/{basename}/{basename}.pair2.truncated.gz',
+        fw=rules.fastp.output.fw,
+        rv=rules.fastp.output.rv,
         index=rules.index_ref.output,
         spa=rules.initial_kma_map.output
     output:
@@ -300,8 +279,8 @@ rule index_consensus:
 # And now we KMA map top that index again
 rule final_kma_map:
     input: 
-        fw='trim/{basename}/{basename}.pair1.truncated.gz',
-        rv='trim/{basename}/{basename}.pair2.truncated.gz',
+        fw=rules.fastp.output.fw,
+        rv=rules.fastp.output.rv,
         index=rules.index_consensus.output
     output:
         mat="seqs/{basename}/{segment,[A-Z0-9]+}.mat.gz",

@@ -28,7 +28,7 @@ end
 # Depth naturally declines towards the ends of the template. This is not
 # necessarily a sign of bad sequencing. So I include the first and last 25 bp,
 # and check for depth < 25.
-count_low_depths(x::Vector{<:Integer}) = count(<(25), @view a[1+TERMINAL:end-TERMINAL])
+count_low_depths(x::Vector{<:Integer}) = count(<(25), @view x[1+TERMINAL:end-TERMINAL])
 
 function count_insignificant_bases(rec::FASTA.Record)
     count(byte -> islowercase(Char(byte)), @view rec.data[rec.sequence])
