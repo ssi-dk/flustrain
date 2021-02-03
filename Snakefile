@@ -6,6 +6,10 @@ SNAKEDIR = os.path.dirname(workflow.snakefile)
 sys.path.append(os.path.join(SNAKEDIR, "scripts"))
 import tools
 
+# We only need this because Julia 1.6 segfaults with PkgCompiler at the moment
+JULIA_PATH = "/Applications/Julia-1.5.app/Contents/Resources/julia/bin/julia"
+SYSIMG_PATH = os.path.join(SNAKEDIR, "scripts", "sysimg", "sysimg.so")
+JULIA_COMMAND = f"{JULIA_PATH} --startup-file=no --project={SNAKEDIR} -J {SYSIMG_PATH}"
 
 ######################################################
 # GLOBAL CONSTANTS
@@ -52,10 +56,14 @@ ruleorder: translate > trim_alignment > mafft
 # in the DAG
 def done_input(wildcards):
     # Add report and the commit
-    inputs = ["report.txt", "commit.txt"]
+    inputs = ["report.txt"]
     checkpoints.cat_reports.get()
 
-    for basename in BASENAMES: 
+    for basename in BASENAMES:
+        # Add trimmed FASTQ
+        for direction in ["fw", "rv"]:
+            inputs.append(f"trim/{basename}/{direction}.fq.gz")
+
         # Add individual report
         inputs.append(f"consensus/{basename}/report.txt")
 
@@ -88,7 +96,9 @@ def done_input(wildcards):
 
 rule all:
     input: done_input
-    output: touch("done")
+    output: "commit.txt"
+    params: SNAKEDIR
+    shell: "git -C {params} rev-parse --short HEAD > {output}"
 
 ############################
 # Alignment module
@@ -177,26 +187,31 @@ rule reference_iqtree:
 ############################
 # CONSENSUS PART OF PIPELINE
 ############################
-rule gitcommit:
-    output: "commit.txt"
-    params: SNAKEDIR
-    shell: "git -C {params} rev-parse --short HEAD > {output}"
-
 rule fastp:
     input:
         fw=lambda wildcards: READ_PAIRS[wildcards.basename][0],
         rv=lambda wildcards: READ_PAIRS[wildcards.basename][1],
     output:
-        fw='trim/{basename}/fw.fq',
-        rv='trim/{basename}/rv.fq',
+        fw=temp('trim/{basename}/fw.fq'),
+        rv=temp('trim/{basename}/rv.fq'),
         html='trim/{basename}/report.html',
         json='trim/{basename}/report.json'
+    log: "log/fastp/{basename}.log"
     threads: 2
     shell:
         'fastp -i {input.fw} -I {input.rv} '
         '-o {output.fw} -O {output.rv} --html {output.html} --json {output.json} '
         '--disable_adapter_trimming --trim_poly_g --cut_tail --low_complexity_filter '
-        '--complexity_threshold 50 --thread {threads}'
+        '--complexity_threshold 50 --thread {threads} 2> {log}'
+
+rule zip_trim:
+    input:
+        fw="trim/{basename}/fw.fq",
+        rv="trim/{basename}/rv.fq"
+    output:
+        fw="trim/{basename}/fw.fq.gz",
+        rv="trim/{basename}/rv.fq.gz"
+    shell: "gzip -k {input}"
 
 # Do this to get the best template, -Sparse option is designed for this.
 rule initial_kma_map:
@@ -252,10 +267,11 @@ rule remove_primers:
     output: "seqs/{basename}/{segment}.trimmed.fna"
     log: "log/consensus/remove_primers_{basename}_{segment}.txt"
     params:
+        juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/trim_consensus.jl",
         minmatches=6
     run:
-        shell("julia {params.scriptpath} {input.primers} {input.con} {output} {params.minmatches} > {log}")
+        shell("{params.juliacmd} {params.scriptpath} {input.primers} {input.con} {output} {params.minmatches} > {log}")
 
 # We now re-map to the created consensus sequence in order to accurately
 # estimate depths and coverage, and get a more reliable assembly seq.
@@ -281,7 +297,9 @@ rule final_kma_map:
     input: 
         fw=rules.fastp.output.fw,
         rv=rules.fastp.output.rv,
-        index=rules.index_consensus.output
+        index=rules.index_consensus.output,
+        # We add this here so the untrimmed ones are not deleted too early.
+        zipped=rules.zip_trim.output
     output:
         mat="seqs/{basename}/{segment,[A-Z0-9]+}.mat.gz",
         res="seqs/{basename}/{segment,[A-Z0-9]+}.res",
@@ -317,16 +335,18 @@ rule move_consensus:
 rule create_report:
     input:
         con=expand("consensus/{{basename}}/{segment}.fna", segment=SEGMENTS),
-        mat=expand("seqs/{{basename}}/{segment}.mat.gz", segment=SEGMENTS)
+        mat=expand("seqs/{{basename}}/{segment}.mat.gz", segment=SEGMENTS),
     output:
         acc="consensus/{basename}/accepted.txt",
         rep="consensus/{basename}/report.txt",
-    params: f"{SNAKEDIR}/scripts/report.jl"
+    params:
+        juliacmd=JULIA_COMMAND,
+        scriptpath=f"{SNAKEDIR}/scripts/report.jl"
     log: "log/report/{basename}"
     run:
         conpaths = ",".join(input.con)
         matpaths = ",".join(input.mat)
-        shell(f"julia {{params}} {conpaths} {matpaths} {{output}} > {{log}}")
+        shell(f"{{params.juliacmd}} {{params.scriptpath}} {conpaths} {matpaths} {{output}} > {{log}}")
 
 checkpoint cat_reports:
     input: expand("consensus/{basename}/report.txt", basename=BASENAMES)
@@ -342,8 +362,10 @@ checkpoint cat_reports:
 rule plot_depths:
     input: expand("seqs/{{basename}}/{segment}.mat.gz", segment=SEGMENTS)
     output: "depths/{basename}.pdf"
-    params: f"{SNAKEDIR}/scripts/covplot.jl"
-    shell: "julia {params} {output} {input}"
+    params:
+        juliacmd=JULIA_COMMAND,
+        scriptpath=f"{SNAKEDIR}/scripts/covplot.jl"
+    shell: "{params.juliacmd} {params.scriptpath} {output} {input}"
 
 ############################
 # IQTREE PART OF PIPELINE

@@ -90,7 +90,7 @@ function report_text(state::ConsensusState)::String
     join(lines, '\n')
 end
 
-function main(conspaths::Vector{<:AbstractString}, matpath::Vector{<:AbstractString},
+function main(conspaths::Vector{<:AbstractString}, matpaths::Vector{<:AbstractString},
     accpath::AbstractString, reportpath::AbstractString
 )
     # Step one: Calculate the report info for each segment

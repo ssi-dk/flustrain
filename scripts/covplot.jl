@@ -38,4 +38,6 @@ function main(outpath::AbstractString, inpaths::Vector{String})
     savefig(plt, outpath)
 end
 
-main(ARGS[1], ARGS[2:end])
+if abspath(PROGRAM_FILE) == @__FILE__
+    main(ARGS[1], ARGS[2:end])
+end
