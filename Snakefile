@@ -75,14 +75,9 @@ def done_input(wildcards):
         # Add phylogeny - only for human viruses for which we have
         # well defined subtypes. 
         if config["refset"] == "human":
-            inputs.append(f"phylogeny/{basename}/HA.treefile")
+            inputs.append(f"phylogeny/{basename}/HA.tree")
 
-            # Add phylogeny of selected segments
             """
-            for phylosegment in ["HA"]:
-                if phylosegment in accepted:
-                    inputs.append(f"phylogeny/{basename}/{phylosegment}.treefile")
-
             # Add resistance of selected segments.
             for resistancesegment in ["NA"]:
                 with open(f"consensus/{basename}/{resistancesegment}.subtype") as file:
@@ -126,6 +121,7 @@ rule translate:
                 translated = tools.translate(entry.sequence.decode())
                 print(">{}\n{}".format(entry.header, translated), file=file)
 
+"""
 rule extract_orf:
     input: "{dir}/{base}.fna"
     output: "{dir}/{base}.orf.fna"
@@ -134,13 +130,11 @@ rule extract_orf:
             for entry in tools.byte_iterfasta(file):
                 pos, orf = tools.find_orf(entry)
                 print(orf.format(), file=outfile)
+"""
 
 #################################
 # REFERENCE-ONLY PART OF PIPELINE
 #################################
-# We use k=14 because we sometimes have very small reads.
-# Since we don't re-calculate this index for every run, we can't toggle
-# the k value depending on the read length config.
 rule index_ref:
     input: REFDIR + "/{segment}.fna"
     output:
@@ -204,13 +198,9 @@ rule fastp:
         '--disable_adapter_trimming --trim_poly_g --cut_tail --low_complexity_filter '
         '--complexity_threshold 50 --thread {threads} 2> {log}'
 
-rule zip_trim:
-    input:
-        fw="trim/{basename}/fw.fq",
-        rv="trim/{basename}/rv.fq"
-    output:
-        fw="trim/{basename}/fw.fq.gz",
-        rv="trim/{basename}/rv.fq.gz"
+rule gzip:
+    input: "{base}"
+    output: "{base}.gz"
     shell: "gzip -k {input}"
 
 # Do this to get the best template, -Sparse option is designed for this.
@@ -229,8 +219,6 @@ rule initial_kma_map:
         "kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
         "-t {threads} -Sparse 2> {log}"
 
-# Possibly add -ref_fsa to disallow gaps and -dense to disallow insertions
-# Align to only the best template found by initial mapping round
 rule kma_map:
     input:
         fw=rules.fastp.output.fw,
@@ -264,14 +252,15 @@ rule remove_primers:
     input:
         con=rules.kma_map.output.fsa,
         primers=f"{SNAKEDIR}/ref/primers.fna"
-    output: "seqs/{basename}/{segment}.trimmed.fna"
+    output: "seqs/{basename}/{segment}.trimmed.fna" 
     log: "log/consensus/remove_primers_{basename}_{segment}.txt"
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/trim_consensus.jl",
-        minmatches=6
+        minmatches=4
     run:
-        shell("{params.juliacmd} {params.scriptpath} {input.primers} {input.con} {output} {params.minmatches} > {log}")
+        shell("{params.juliacmd} {params.scriptpath} {input.primers} "
+              "{input.con} {output} {params.minmatches} > {log}")
 
 # We now re-map to the created consensus sequence in order to accurately
 # estimate depths and coverage, and get a more reliable assembly seq.
@@ -299,7 +288,7 @@ rule final_kma_map:
         rv=rules.fastp.output.rv,
         index=rules.index_consensus.output,
         # We add this here so the untrimmed ones are not deleted too early.
-        zipped=rules.zip_trim.output
+        zipped=["trim/{basename}/fw.fq.gz", "trim/{basename}/rv.fq.gz"]
     output:
         mat="seqs/{basename}/{segment,[A-Z0-9]+}.mat.gz",
         res="seqs/{basename}/{segment,[A-Z0-9]+}.res",
