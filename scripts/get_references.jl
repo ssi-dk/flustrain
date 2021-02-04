@@ -2,87 +2,17 @@
 # To use this, install cd-hit, and get the influenza database from NCBI.
 # They have an FTP link. I did this 2021-01-21
 
+#=
+Accession (string) => FASTA
+Accession (string) => Protein
+
+=#
+
 using FASTX
 using BioSequences
 using ErrorTypes
 using Transducers
 
-@enum Segment::UInt8 begin
-    PB2
-    PB1
-    PA
-    HA
-    NP
-    NA
-    MP
-    NS
-end
-
-const EXPECTED_GENES = [1, 2, 2, 1, 1, 1, 2, 2]
-
-Segment(s::Union{String, SubString}) = Segment(parse(UInt8, s) - 0x01)
-
-#### LOAD IN ORF DATA from "influenza.dat"
-# Looks like one of these lines:
-# (gb|AB000613:4-731, 960)
-# gb|AB000721:710-1129
-# gb|AB266385:<1-755
-function parse_orf(s::AbstractString)::Option{Vector{UnitRange{Int}}}
-    # If it looks like gb|AB266090:<411->632, the ORF is not present
-    # in the reference, and we skip it
-    if occursin('>', s) || occursin('<', s)
-        return none
-    end
-
-    # Multiple ORFs in a gene makes them enclosed in brackets
-    s1 = strip(s, ['(', ')'])
-    p = findfirst(isequal(':'), s1)
-    p === nothing && return none
-    s2 = @view s1[p+1:ncodeunits(s1)]
-    orfstrings = split(s2, ", ")
-    result = UnitRange{Int}[]
-    for orfstring in orfstrings
-        p2 = findfirst(isequal('-'), orfstring)
-        # If it's not a range, it must be a single number
-        if p2 === nothing
-            start = parse(Int, orfstring)
-            push!(result, start:start)
-        else
-            start = parse(Int, @view orfstring[1:p2-1])
-            stop = parse(Int, orfstring[p2+1:ncodeunits(orfstring)])
-            push!(result, start:stop)
-        end
-    end
-
-    # For good measure, we check it's divisible by three to actually be
-    # an ORF which can encode a protein
-    iszero(mapreduce(length, +, result) % 3) || return none
-    return Thing(result)
-end
-
-# First col is the segment accession, fields 3, 5, 7 etc. are protein ORFS
-function load_orf_line(result::Vector, line::AbstractString)::Option{String}
-    fields = split(line, '\t')
-    length(fields) < 3 && return none
-    empty!(result)
-    for orf_field in fields[3:2:end]
-        push!(result, @?(parse_orf(orf_field)))
-    end
-    return Thing(String(first(fields)))
-end
-
-function load_orf_data(io::IO)
-    orfs = Dict{String, Vector{Vector{UnitRange{Int}}}}()
-    v = Vector{Vector{UnitRange{Int}}}()
-    for line in eachline(io)
-        maybe_key = load_orf_line(v, line)
-        is_none(maybe_key) && continue
-        orfs[unwrap(maybe_key)] = copy(v)
-    end
-    orfs
-end
-
-##### CLEAN THE DATA
 format_error(s) =  error("Unknown format: \"$s\"")
 function parse_name(s::Union{String, SubString})::Option{String}
     isempty(s) && return none
@@ -108,7 +38,7 @@ function parse_name(s::Union{String, SubString})::Option{String}
     return Thing(String(rest3))
 end
 
-function clean_data(io::IO, out::IO, orf_dict::Dict{String})
+function clean_data(io::IO, out::IO)
     for line in (eachline(io) |> Filter(!isempty))
         fields = split(line, '\t')
         if length(fields) != 11
@@ -116,17 +46,6 @@ function clean_data(io::IO, out::IO, orf_dict::Dict{String})
             error()
         end
         gi, host, segment, subtype, country, year, len, name, age, gender, group = fields
-
-        # Skip any segment if it's not in the ORF dict OR if segment doesn't have
-        # the right number of genes
-        if !haskey(orf_dict, gi)
-            continue
-        end
-
-        # Filter segment
-        if !in(parse(Int, segment), 1:8)
-            segment = ""
-        end
 
         # Filter subtype
         subtype_upper = uppercase(subtype)
@@ -161,11 +80,183 @@ function clean_data(io::IO, out::IO, orf_dict::Dict{String})
     end
 end
 
-orf_dict = open(load_orf_data, "/Users/jakobnissen/Downloads/INFLUENZA/raw/influenza.dat")
 open("/Users/jakobnissen/Downloads/INFLUENZA/raw/genomeset.dat") do infile
-    open("/Users/jakobnissen/Downloads/INFLUENZA/genomeset.filt2.dat", "w") do outfile
-        clean_data(infile, outfile, orf_dict)
+    open("/Users/jakobnissen/Downloads/INFLUENZA/processed/genomeset.filt.dat", "w") do outfile
+        clean_data(infile, outfile)
     end
+end
+
+###########################
+
+@enum Segment::UInt8 begin
+    PB2
+    PB1
+    PA
+    HA
+    NP
+    NA
+    MP
+    NS
+end
+
+const SEGMENT_STR_DICT = Dict(string(s)=>s for s in instances(Segment))
+
+function parse_from_integer(::Type{Segment}, s::AbstractString)::Option{Segment}
+    y = tryparse(UInt8, s)
+    y === nothing && return none
+    (iszero(y) | (y > 0x08)) && return none
+    Thing(reinterpret(Segment, y - 0x01))
+end
+
+function parse_from_name(::Type{Segment}, s::AbstractString)::Option{Segment}
+    y = get(SEGMENT_STR_DICT, s, nothing)
+    y === nothing && return none
+    Thing(y)
+end
+
+@enum ProteinVariant::UInt8 begin
+    pb2
+    pb1
+    pb1fa
+    pa
+    pax
+    ha
+    np
+    na
+    m1
+    m2
+    ns1
+    nep
+end
+
+# Approx +/- 100 bp for each ORF. For detecting which ORF is which
+const ORF_LEN_RANGE = UnitRange{UInt16}[
+    2100:2325,
+    2100:2325,
+    6:1000,
+    2050:2300,
+    600:800,
+    1600:1800,
+    1400:1600,
+    1300:1500,
+    650:850,
+    200:400,
+    550:750,
+    250:450
+]
+
+orf_len_range(v::ProteinVariant) = @inbounds ORF_LEN_RANGE[reinterpret(UInt8, v) + 0x01]
+
+const VARIANTS = [
+    [pb2],
+    [pb1, pb1fa],
+    [pa, pax],
+    [ha],
+    [np],
+    [na],
+    [m1, m2],
+    [ns1, nep]
+]
+
+variants(s::Segment) = @inbounds VARIANTS[reinterpret(UInt8, s) + 0x01]
+
+# No known influenza proteins has more than two ORFs
+struct Protein
+    variant::ProteinVariant
+    orfs::Union{UnitRange{UInt16}, NTuple{2, UnitRange{UInt16}}}
+end
+
+# No infleunza segment has more than two known proteins
+struct Accession
+    name::String
+    segment::Segment
+    proteins::Union{Protein, NTuple{2, Protein}}
+end
+
+#########################################################
+"detects the ProteinVariant based on length of ORF"
+function infer_proteinvariant(segment::Segment, orflen::Integer)::Option{ProteinVariant}
+    for var in variants(segment)
+        if orflen in orf_len_range(var)
+            return Thing(var)
+        end
+    end
+    return none
+end
+
+#########################################################
+
+#### LOAD IN ORF DATA from "influenza.dat"
+# Looks like one of these lines:
+# (gb|AB000613:4-731, 960)
+# gb|AB000721:710-1129
+# gb|AB266385:<1-755
+function parse_range(s::AbstractString)::Option{UnitRange{UInt16}}
+    p2 = findfirst(isequal('-'), s)
+    # If it's not a range, it must be a single number
+    if p2 === nothing
+        n = parse(UInt16, s)
+        Thing(n:n)
+    else
+        start = parse(UInt16, @view s[1:p2-1])
+        stop = parse(UInt16, s[p2+1:ncodeunits(s)])
+        Thing(start:stop)
+    end
+end
+
+# This returns the ORFS. When checking length, we can verify which of the ORFS it is.
+function parse_orf(s::AbstractString, segment::Segment,
+)::Option{Protein}
+    # If it looks like gb|AB266090:<411->632, the ORF is not present
+    # in the reference, and we skip it
+    if occursin('>', s) || occursin('<', s)
+        return none
+    end
+
+    # Multiple ORFs in a gene makes them enclosed in brackets
+    s1 = strip(s, ['(', ')'])
+    p = findfirst(isequal(':'), s1)
+    p === nothing && return none
+    s2 = @view s1[p+1:ncodeunits(s1)]
+    (range, len) = if occursin(',', s2)
+        orfstrings = split(s2, ", ")
+        length(orfstrings) == 2 || return none
+        r1 = @? parse_range(orfstrings[1]) 
+        r2 = @? parse_range(orfstrings[2])
+        (r1, r2), (length(r1) + length(r2))
+    else
+        r1 = @? parse_range(s2)
+        r1, length(r1)
+    end
+    # Return none if it's not divisible by three and thus cant be ORF
+    iszero(len % 3) || return none
+    var = @? infer_proteinvariant(segment, len)
+    Thing(Protein(var, range))
+end
+
+# First col is the segment accession, fields 3, 5, 7 etc. are protein ORFS
+function load_orf_line(v::Vector{Protein}, line::AbstractString, segment::Segment)::Option{String}
+    fields = split(line, '\t')
+    length(fields) < 3 && return none
+    empty!(v)
+    for orf_field in fields[3:2:end]
+        push!(v, @?(parse_orf(orf_field, segment)))
+    end
+    return Thing(String(first(fields)))
+end
+
+function load_orf_data(io::IO, segmentof::Dict{String, Segment})
+    orfs = Dict{String, Union{Protein, NTuple{2, Protein}}}()
+    v = Vector{Protein}()
+    for line in eachline(io)
+        id = first(split(line, '\t'))
+        segment = get(segmentof, id, nothing)
+        segment === nothing && continue
+        maybe_key = load_orf_line(v, line, segment)
+        is_none(maybe_key) && continue
+        orfs[unwrap(maybe_key)] = length(v) == 2 ? Tuple(v) : first(v)
+    end
+    orfs
 end
 
 #### PARSE THE DATA
@@ -209,7 +300,7 @@ struct FluMeta
     gi::String
     host::Species
     segment::Segment
-    subtype::Option{SubType}
+    subtype::SubType
     year::Int
     len::Int
     name::String
@@ -217,12 +308,12 @@ end
 
 function parse_flumeta(s::Union{String, SubString})::Option{FluMeta}
     fields = split(s, '\t')
-    subtype = parse_subtype(fields[4])
+    subtype = @? parse_subtype(fields[4])
     year = @? parse_year(fields[6])
     host = Species(fields[2])
     gi = String(fields[1])
     name = String(fields[8])
-    segment = Segment(fields[3])
+    segment = @? parse_from_integer(Segment, fields[3])
     len = parse(Int, fields[7])
 
     return Thing(FluMeta(gi, host, segment, subtype, year, len, name))
@@ -239,10 +330,27 @@ function parse_all(lines)
     metas
 end
 
-records = parse_all(eachline("processed/genomeset.filt.dat"))
+records = open(parse_all, "processed/genomeset.filt.dat")
+segmentof = Dict(m.gi => m.segment for m in records)
+orf_dict = open("/Users/jakobnissen/Downloads/INFLUENZA/raw/influenza.dat") do io
+    load_orf_data(io, segmentof)
+end
 
-#### NOW WE CAN DEDUPLICATE ET CETERA
-# The lengths are fine enough
+##################### A series of filters to filter the flumeta
+###############################################################
+const N_PROTEINS = [(1,), (1, 2), (2,), (1,), (1,), (1,), (2,), (2,)]
+n_proteins(s::Segment) = @inbounds N_PROTEINS[reinterpret(UInt8, s) + 0x01]
+
+filter!(records) do record
+    proteins = get(orf_dict, record.gi, nothing)
+
+    # Has to have parse-able ORFs
+    proteins === nothing && return false
+    n = isa(proteins, Tuple) ? length(proteins) : 1
+
+    # Has to have the correct number of ORFs
+    n in n_proteins(record.segment)
+end
 
 # Load in seqs by genbank acc number
 by_id = open(FASTA.Reader, "raw/influenza.fna") do reader
@@ -273,6 +381,36 @@ for record in records # all can be matched
     push!(fluseqs, FluSeq(seq, record))
 end
 
+########## Check lengths
+bysegment = Dict(s => FluSeq[] for s in instances(Segment))
+foreach(fluseqs) do fluseq
+    push!(bysegment[fluseq.meta.segment], fluseq)
+end
+
+# Plot lengths to see outliers
+for (k, v) in bysegment
+    show(histogram(map(x -> length(x.seq), v), title=string(k)))
+end
+
+# This is manually made by looking at the plots above, in order
+# to remote truncated seqs or seqs with junk in them
+trimrange = Dict(
+    NP => 1490:1570,
+    HA => 1680:1780,
+    MP => 980:1030,
+    PB1 => 2270:2345,
+    PA => 2150:2240,
+    NA => 1350:1470,  # very wide distribution??
+    NS => 820:895,
+    PB2 => 2280:2345
+)
+
+filter!(fluseqs) do fluseq
+    in(length(fluseq.seq), trimrange[fluseq.meta.segment])
+end
+
+#### NOW WE CAN DEDUPLICATE ET CETERA
+
 # Create a unfilt for each segment
 for species in [avian, swine]
     hostseqs = filter(x -> x.meta.host == species, fluseqs)
@@ -299,10 +437,15 @@ for species in [avian, swine]
     end
 end
 
+# Move to the correct directory (commented out for safety)
+
+target_dir = "/Users/jakobnissen/Documents/ssi/projects/flupipe/ref/"
 for species in [avian, swine]
+    subdir = joinpath(target_dir, string(species))
+    isdir(subdir) || mkdir(subdir)
     for segment in instances(Segment)
         cp("processed/$species/$segment.fna.cdhit",
-        "/Users/jakobnissen/Documents/ssi/projects/flupipe/ref/$species/$segment.fna",
+        "$subdir/$segment.fna",
         force=true)
     end
 end
