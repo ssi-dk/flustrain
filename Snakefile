@@ -55,7 +55,7 @@ ruleorder: translate > trim_alignment > mafft > second_kma_map > gzip
 # We add the checkpoiint output here just to make sure the checkpoint is included
 # in the DAG
 
-"""
+
 def done_input(wildcards):
     # Add report and the commit
     inputs = ["report.txt"]
@@ -87,13 +87,6 @@ def done_input(wildcards):
                 if resistancesegment in accepted and subtype in ("H1N1", "H3N2"):
                     inputs.append(f"consensus/{basename}/{resistancesegment}.resistance.txt")
 
-
-    return inputs
-"""
-def done_input(wildcards):
-    inputs = []
-    for basename in BASENAMES:
-        inputs.append(f"consensus/{basename}/HA.fna")
 
     return inputs
 
@@ -194,8 +187,8 @@ rule fastp:
         fw=lambda wildcards: READ_PAIRS[wildcards.basename][0],
         rv=lambda wildcards: READ_PAIRS[wildcards.basename][1],
     output:
-        fw=temp('trim/{basename}/fw.fq'),
-        rv=temp('trim/{basename}/rv.fq'),
+        fw='trim/{basename}/fw.fq',
+        rv='trim/{basename}/rv.fq',
         html='trim/{basename}/report.html',
         json='trim/{basename}/report.json'
     log: "log/fastp/{basename}.log"
@@ -267,19 +260,19 @@ rule first_kma_map:
     # setting open/ext/m/mm be -5/-1/1/-3 will lead to better results still?
     run:
         shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-        "-t {threads} -1t1 -gapopen -5 -nf 2> {log} || echo foo")
+        "-t {threads} -1t1 -gapopen -5 -nf 2> {log}")
 
 # In our current lab setup, we use primers to amplify our influeza segments. But these do not have the
 # proper sequence. We do this before the final mapping step in order to get well-defined
 # start and stop of the sequenced part for the last round of mapping.
 
-""" TODO: RE-ADD THIS AND MAKE SURE ITS IN THE DAG
+
 rule remove_primers:
     input:
-        con=rules.kma_map.output.fsa,
+        con=rules.first_kma_map.output.fsa,
         primers=f"{SNAKEDIR}/ref/primers.fna"
-    output: "seqs/{basename}/{segment}.trimmed.fna" 
-    log: "log/consensus/remove_primers_{basename}_{segment}.txt"
+    output: "aln/{basename}/cat.trimmed.fna" 
+    log: "log/consensus/remove_primers_{basename}.txt"
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/trim_consensus.jl",
@@ -287,19 +280,18 @@ rule remove_primers:
     run:
         shell("{params.juliacmd} {params.scriptpath} {input.primers} "
               "{input.con} {output} {params.minmatches} > {log}")
-"""
 
 # We now re-map to the created consensus sequence in order to accurately
 # estimate depths and coverage, and get a more reliable assembly seq.
 rule second_kma_index:
-    input: "aln/{basename}/kma1.fsa"
+    input: "aln/{basename}/cat.trimmed.fna"
     output:
-        comp="aln/{basename}/kma1.fsa.comp.b",
-        name="aln/{basename}/kma1.fsa.name",
-        length="aln/{basename}/kma1.fsa.length.b",
-        seq="aln/{basename}/kma1.fsa.seq.b"
+        comp="aln/{basename}/cat.trimmed.comp.b",
+        name="aln/{basename}/cat.trimmed.name",
+        length="aln/{basename}/cat.trimmed.length.b",
+        seq="aln/{basename}/cat.trimmed.seq.b"
     params:
-        t_db="aln/{basename}/kma1.fsa"
+        t_db="aln/{basename}/cat.trimmed"
     log: "log/aln/kma2_index_{basename}.log"
     shell: "kma index -i {input} -o {params.t_db} 2> {log}"
 
@@ -314,7 +306,7 @@ rule second_kma_map:
         res="aln/{basename}/kma2.res",
         fsa="aln/{basename}/kma2.fsa"
     params:
-        db="aln/{basename}/kma1.fsa",
+        db="aln/{basename}/cat.trimmed",
         outbase="aln/{basename}/kma2",
     log: "log/aln/kma2_map_{basename}.log"
     threads: 2
@@ -361,7 +353,7 @@ checkpoint cat_reports:
                         print('\t', line, sep='', end='', file=outfile)
 
 rule plot_depths:
-    input: expand("seqs/{{basename}}/{segment}.mat.gz", segment=SEGMENTS)
+    input: "seqs/{basename}/kma2.mat.gz"
     output: "depths/{basename}.pdf"
     params:
         juliacmd=JULIA_COMMAND,
