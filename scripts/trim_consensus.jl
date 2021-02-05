@@ -43,16 +43,9 @@ function load_primers(path::String)
     end
 end
 
-function load_consensus(path::String)
-    open(FASTA.Reader, path) do reader
-        itval = iterate(reader)
-        itval === nothing && return nothing
-        record, _ = itval
-        seq = FASTA.sequence(LongDNASeq, record)
-        header = get_header(record)
-        iterate(reader) === nothing || error("Multiple records in file $path")
-        (header, seq)
-    end
+function load_consensus(path::String)::Vector{Tuple{String, LongDNASeq}}
+    recs = open(collect, FASTA.Reader, path)
+    [(get_header(record), FASTA.sequence(LongDNASeq, record)) for record in recs]
 end
 
 function remove_primers(seq::NucleotideSeq, primers::Vector{<:Tuple{String, NucleotideSeq}}, minlength::Int)
@@ -68,26 +61,20 @@ function remove_primers(seq::NucleotideSeq, primers::Vector{<:Tuple{String, Nucl
 end
 
 function trim_consensus(primerpath::String, consensuspath::String, output::String, minlength::Int)
-    cons = load_consensus(consensuspath)
-    
-    # If no consensus input
-    if isnothing(cons)
-        touch(output)
-        return
-    end
-    
-    # Else, actually do work
-    header, seq = cons
+    consensus = load_consensus(consensuspath)
     primers = load_primers(primerpath)
-    if !isempty(primers)
-        seq = remove_primers(seq, primers, minlength)
-        seq = remove_primers(reverse_complement(seq), primers, minlength)
-        seq = reverse_complement(seq)
-    end
     open(FASTA.Writer, output) do writer
-        write(writer, FASTA.Record(header, seq))
+        for (header, seq) in consensus
+            if !isempty(primers)
+                seq = remove_primers(seq, primers, minlength)
+                seq = remove_primers(reverse_complement(seq), primers, minlength)
+                seq = reverse_complement(seq)
+            end
+            newrecord = FASTA.Record(header, seq)
+            write(writer, newrecord)
+        end
     end
-end 
+end
 
 if abspath(PROGRAM_FILE) == @__FILE__
     if length(ARGS) != 4

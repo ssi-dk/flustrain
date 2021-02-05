@@ -611,10 +611,6 @@ git-tree-sha1 = "be127ca4ba297c1574457baa0ac3092b0054395e"
 uuid = "8e1ec7a9-0e02-4297-b0fe-6433085c89f2"
 version = "0.1.1"
 
-[[TOML]]
-deps = ["Dates"]
-uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
-
 [[TableTraits]]
 deps = ["IteratorInterfaceExtensions"]
 git-tree-sha1 = "b1ad568ba658d8cbb3b892ed5380a6f3e781a81e"

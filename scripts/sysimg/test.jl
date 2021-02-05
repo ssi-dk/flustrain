@@ -4,6 +4,19 @@ end
 
 Trim.trim_consensus("primers.fna", "test.fna", "out.fna", 4)
 
+module CovPlot
+    include("../covplot.jl")
+end
+
+CovPlot.main("out.pdf", ["NS.mat.gz"])
+
+module Report
+    include("../report.jl")
+end
+
+Report.main(["NS.fsa"], ["NS.mat.gz"], "out.acc", "out.report")
+
+#=
 module Nanofilt
     include("../nanofilt.jl")
 end
@@ -15,3 +28,4 @@ module Nanoplot
 end
 
 Nanoplot._nanoplot("test.fastq.gz", "out")
+=#

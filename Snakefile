@@ -6,6 +6,10 @@ SNAKEDIR = os.path.dirname(workflow.snakefile)
 sys.path.append(os.path.join(SNAKEDIR, "scripts"))
 import tools
 
+# We only need this because Julia 1.6 segfaults with PkgCompiler at the moment
+JULIA_PATH = "/Applications/Julia-1.5.app/Contents/Resources/julia/bin/julia"
+SYSIMG_PATH = os.path.join(SNAKEDIR, "scripts", "sysimg", "sysimg.so")
+JULIA_COMMAND = f"{JULIA_PATH} --startup-file=no --project={SNAKEDIR} -J {SYSIMG_PATH}"
 
 ######################################################
 # GLOBAL CONSTANTS
@@ -46,20 +50,22 @@ SUBTYPES = ["H1N1", "H3N2", "Victoria", "Yamagata"]
 ######################################################
 # Start of pipeline
 ######################################################
-ruleorder: translate > trim_alignment > mafft
+ruleorder: translate > trim_alignment > mafft > second_kma_map > gzip
 
 # We add the checkpoiint output here just to make sure the checkpoint is included
 # in the DAG
+
+
 def done_input(wildcards):
-    # Add report
+    # Add report and the commit
     inputs = ["report.txt"]
     checkpoints.cat_reports.get()
 
     for basename in BASENAMES:
-        # Add FASTQC report
-        for pair in (1, 2):
-            inputs.append(f"fastqc/{basename}/{basename}.pair{pair}.truncated_fastqc.html")
-        
+        # Add trimmed FASTQ
+        for direction in ["fw", "rv"]:
+            inputs.append(f"trim/{basename}/{direction}.fq.gz")
+
         # Add individual report
         inputs.append(f"consensus/{basename}/report.txt")
 
@@ -79,7 +85,9 @@ def done_input(wildcards):
 
 rule all:
     input: done_input
-    output: touch("done")
+    output: "commit.txt"
+    params: SNAKEDIR
+    shell: "git -C {params} rev-parse --short HEAD > {output}"
 
 ############################
 # Alignment module
@@ -87,7 +95,8 @@ rule all:
 rule mafft:
     input: "{dir}/{base}.{ext}"
     output: "{dir}/{base}.aln.{ext,faa|fna}"
-    shell: "mafft --auto {input} > {output}"
+    threads: 4
+    shell: "mafft --thread {threads} --auto {input} > {output}"
 
 rule trim_alignment:
     input: "{dir}/{base}.aln.{ext}"
@@ -106,6 +115,7 @@ rule translate:
                 translated = tools.translate(entry.sequence.decode())
                 print(">{}\n{}".format(entry.header, translated), file=file)
 
+"""
 rule extract_orf:
     input: "{dir}/{base}.fna"
     output: "{dir}/{base}.orf.fna"
@@ -114,13 +124,11 @@ rule extract_orf:
             for entry in tools.byte_iterfasta(file):
                 pos, orf = tools.find_orf(entry)
                 print(orf.format(), file=outfile)
+"""
 
 #################################
 # REFERENCE-ONLY PART OF PIPELINE
 #################################
-# We use k=14 because we sometimes have very small reads.
-# Since we don't re-calculate this index for every run, we can't toggle
-# the k value depending on the read length config.
 rule index_ref:
     input: REFDIR + "/{segment}.fna"
     output:
@@ -131,11 +139,11 @@ rule index_ref:
     params:
         outpath=REFOUTDIR + "/{segment}",
     log: "log/kma_ref/{segment}.log"
-    # We want a high K for finding the template (k_t), because we just want
-    # an approximate result to get the best template.
-    # Within a template, we want to be more accurate, so we use a smaller k_i.
-    # Note: KMA speed is highly sensitive to k_i setting. k_i = 8 is very slow.
-    shell: "kma index -k_t 16 -k_i 10 -i {input} -o {params.outpath} 2> {log}"
+    
+    # The pipeline is very sensitive to the value of k here.
+    # Too low means the mapping is excruciatingly slow,
+    # too high results in very poor mapping quality.
+    shell: "kma index -k 12 -i {input} -o {params.outpath} 2> {log}"
 
 
 rule split_ref_subtype:
@@ -167,50 +175,33 @@ rule reference_iqtree:
 ############################
 # CONSENSUS PART OF PIPELINE
 ############################
-rule adapterremoval:
+rule fastp:
     input:
         fw=lambda wildcards: READ_PAIRS[wildcards.basename][0],
         rv=lambda wildcards: READ_PAIRS[wildcards.basename][1],
     output:
-        discarded='trim/{basename}/{basename}.discarded.gz',
-        single='trim/{basename}/{basename}.singleton.truncated.gz',
-        fw='trim/{basename}/{basename}.pair1.truncated.gz',
-        rv='trim/{basename}/{basename}.pair2.truncated.gz',
-    log: 'log/trim/{basename}.log'
-    params:
-        basename="trim/{basename}/{basename}"
+        fw='trim/{basename}/fw.fq',
+        rv='trim/{basename}/rv.fq',
+        html='trim/{basename}/report.html',
+        json='trim/{basename}/report.json'
+    log: "log/fastp/{basename}.log"
     threads: 2
     shell:
-        'AdapterRemoval '
-        # Input files
-        '--file1 {input.fw} --file2 {input.rv} '
-        # Output files
-        '--basename {params.basename} '
-        "2> {log} "
-        # Other parameters:
-        '--minlength 20 --trimns --trimqualities --minquality 20 '
-        '--qualitybase 33 --gzip --trimwindows 5 --threads {threads}'
+        'fastp -i {input.fw} -I {input.rv} '
+        '-o {output.fw} -O {output.rv} --html {output.html} --json {output.json} '
+        '--disable_adapter_trimming --trim_poly_g --cut_tail --low_complexity_filter '
+        '--complexity_threshold 50 --thread {threads} 2> {log}'
 
-rule fastqc:
-    input: [rules.adapterremoval.output.fw, rules.adapterremoval.output.rv]
-    output:
-        fw='fastqc/{basename}/{basename}.pair1.truncated_fastqc.html',
-        rv='fastqc/{basename}/{basename}.pair2.truncated_fastqc.html',
-    log: 'log/fastqc/{basename}.log'
-    threads: 2
-    # Annoyingly, it prints "analysis complete" to stdout
-    shell: 'fastqc -t {threads} {input} -o fastqc/{wildcards.basename} 2> {log} > /dev/null'
+rule gzip:
+    input: "{base}"
+    output: "{base}.gz"
+    shell: "gzip -k {input}"
 
 # Do this to get the best template, -Sparse option is designed for this.
 rule initial_kma_map:
     input:
-        fw='trim/{basename}/{basename}.pair1.truncated.gz',
-        rv='trim/{basename}/{basename}.pair2.truncated.gz',
-        # We artificially add FASTQC here to move FASTQC up the dependency graph,
-        # such that it is completed before the checkpoint. Else, Snakemake will remove
-        # the trimmed files before FASTQC, since it can't see across the checkpoint
-        # and will believe there is no more use of the trimmed files.
-        fastqc = rules.fastqc.output,
+        fw=rules.fastp.output.fw,
+        rv=rules.fastp.output.rv,
         index=rules.index_ref.output
     output: "aln/{basename}/{segment,[A-Z0-9]+}.spa"
     params:
@@ -222,113 +213,122 @@ rule initial_kma_map:
         "kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
         "-t {threads} -Sparse 2> {log}"
 
-rule kma_map:
-    input:
-        fw='trim/{basename}/{basename}.pair1.truncated.gz',
-        rv='trim/{basename}/{basename}.pair2.truncated.gz',
-        index=rules.index_ref.output,
-        spa=rules.initial_kma_map.output
-    output:
-        res="aln/{basename}/{segment,[A-Z0-9]+}.res",
-        fsa="aln/{basename}/{segment,[A-Z0-9]+}.fsa"
+rule gather_spa:
+    input: expand("aln/{basename}/{segment}.spa", segment=SEGMENTS, basename=BASENAMES)
+    output: expand("aln/{basename}/cat.fna", basename=BASENAMES)
     params:
-        db=REFOUTDIR + "/{segment}", # same as index_reffile param
-        outbase="aln/{basename}/{segment}",
-        subject=lambda wc: tools.get_best_subject(f"aln/{wc.basename}/{wc.segment}.spa")[1]
-    log: "log/aln/{basename}_{segment}.log"
+        juliacmd=JULIA_COMMAND,
+        scriptpath=f"{SNAKEDIR}/scripts/gather_spa.jl",
+        refpath=REFDIR
+    shell: "{params.juliacmd} {params.scriptpath} aln {params.refpath}"
+
+rule first_kma_index:
+    input: "aln/{basename}/cat.fna"
+    output:
+        comp="aln/{basename}/cat.comp.b",
+        name="aln/{basename}/cat.name",
+        length="aln/{basename}/cat.length.b",
+        seq="aln/{basename}/cat.seq.b"
+    params:
+        t_db="aln/{basename}/cat"
+    log: "log/aln/kma1_index_{basename}.log"
+    shell: "kma index -k 12 -i {input} -o {params.t_db} 2> {log}"
+
+rule first_kma_map:
+    input:
+        fw=rules.fastp.output.fw,
+        rv=rules.fastp.output.rv,
+        index=rules.first_kma_index.output,
+    output:
+        res="aln/{basename}/kma1.res",
+        fsa="aln/{basename}/kma1.fsa"
+    params:
+        db="aln/{basename}/cat",
+        outbase="aln/{basename}/kma1",
+    log: "log/aln/kma1_map_{basename}.log"
     threads: 2
     run:
-        if params.subject is None:
-            tools.touch_files(output)
-        else:
-            shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-            "-t {threads} -gapopen -5 -nf -Mt1 " + str(params.subject) + " 2> {log}")
+        shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
+        "-t {threads} -1t1 -gapopen -5 -nf 2> {log}")
 
 # In our current lab setup, we use primers to amplify our influeza segments. But these do not have the
 # proper sequence. We do this before the final mapping step in order to get well-defined
 # start and stop of the sequenced part for the last round of mapping.
+
+
 rule remove_primers:
     input:
-        con=rules.kma_map.output.fsa,
+        con=rules.first_kma_map.output.fsa,
         primers=f"{SNAKEDIR}/ref/primers.fna"
-    output: "seqs/{basename}/{segment}.trimmed.fna"
-    log: "log/consensus/remove_primers_{basename}_{segment}.txt"
+    output: "aln/{basename}/cat.trimmed.fna" 
+    log: "log/consensus/remove_primers_{basename}.txt"
     params:
+        juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/trim_consensus.jl",
-        minmatches=6
+        minmatches=4
     run:
-        shell("julia {params.scriptpath} {input.primers} {input.con} {output} {params.minmatches} > {log}")
+        shell("{params.juliacmd} {params.scriptpath} {input.primers} "
+              "{input.con} {output} {params.minmatches} > {log}")
 
 # We now re-map to the created consensus sequence in order to accurately
 # estimate depths and coverage, and get a more reliable assembly seq.
-rule index_consensus:
-    input: rules.remove_primers.output
+rule second_kma_index:
+    input: "aln/{basename}/cat.trimmed.fna"
     output:
-        comp="seqs/{basename}/{segment,[a-zA-Z0-9]+}.comp.b",
-        name="seqs/{basename}/{segment,[a-zA-Z0-9]+}.name",
-        length="seqs/{basename}/{segment,[a-zA-Z0-9]+}.length.b",
-        seq="seqs/{basename}/{segment,[a-zA-Z0-9]+}.seq.b"
+        comp="aln/{basename}/cat.trimmed.comp.b",
+        name="aln/{basename}/cat.trimmed.name",
+        length="aln/{basename}/cat.trimmed.length.b",
+        seq="aln/{basename}/cat.trimmed.seq.b"
     params:
-        outpath="seqs/{basename}/{segment}"
-    log: "log/seqs/kma_index_{basename}_{segment}.log"
-    run:
-        rec = tools.try_first_rec(input[0])
-        if rec is None or len(rec) < 50:
-            tools.touch_files(output)
-        else:
-            shell("kma index -i {input} -o {params.outpath} 2> {log}")
+        t_db="aln/{basename}/cat.trimmed"
+    log: "log/aln/kma2_index_{basename}.log"
+    shell: "kma index -i {input} -o {params.t_db} 2> {log}"
 
 # And now we KMA map to that index again
-rule final_kma_map:
+rule second_kma_map:
     input: 
-        fw='trim/{basename}/{basename}.pair1.truncated.gz',
-        rv='trim/{basename}/{basename}.pair2.truncated.gz',
-        index=rules.index_consensus.output
+        fw=rules.fastp.output.fw,
+        rv=rules.fastp.output.rv,
+        index=rules.second_kma_index.output
     output:
-        mat="seqs/{basename}/{segment,[A-Z0-9]+}.mat.gz",
-        res="seqs/{basename}/{segment,[A-Z0-9]+}.res",
-        fsa="seqs/{basename}/{segment,[A-Z0-9]+}.fsa"
+        mat="aln/{basename}/kma2.mat.gz",
+        res="aln/{basename}/kma2.res",
+        fsa="aln/{basename}/kma2.fsa"
     params:
-        db="seqs/{basename}/{segment}",
-        outbase="seqs/{basename}/{segment}",
-        lengthfile="seqs/{basename}/{segment,[a-zA-Z0-9]+}.length.b"
-    log: "log/seqs/kma_map_{basename}_{segment}.log"
+        db="aln/{basename}/cat.trimmed",
+        outbase="aln/{basename}/kma2",
+    log: "log/aln/kma2_map_{basename}.log"
     threads: 2
     run:
-        nbytes = len(open(params.lengthfile, "rb").read())
-        if nbytes < 5:
-            tools.touch_files(output)
-        else:
-            shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-            "-t {threads} -gapopen -5 -nf -matrix 2> {log}")
+        shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
+        "-t {threads} -1t1 -gapopen -5 -nf -matrix 2> {log} || echo foo")
 
 rule move_consensus:
-    input: "seqs/{basename}/{segment}.fsa"
-    output: "consensus/{basename}/{segment}.fna"
-    run:
-        with open(input[0], "rb") as file:
-            try:
-                consensus = next(tools.byte_iterfasta(file))
-            except StopIteration:
-                consensus = tools.FastaEntry("", bytearray())
+    # We add this here so the untrimmed ones are not deleted too early.
+    input: expand(["aln/{basename}/kma2.fsa", "trim/{basename}/fw.fq.gz", "trim/{basename}/rv.fq.gz"], basename=BASENAMES)
+    output: expand("consensus/{basename}/{segment}.fna", segment=SEGMENTS, basename=BASENAMES)
+    params:
+        juliacmd=JULIA_COMMAND,
+        scriptpath=f"{SNAKEDIR}/scripts/move_consensus.jl",
+        segments=lambda wc: ",".join(SEGMENTS)
+    shell: "{params.juliacmd} {params.scriptpath} aln consensus {params.segments}"
 
-        consensus.header = "{}_{}".format(wildcards.basename, wildcards.segment)
-        with open(output[0], "w") as file:
-            print(consensus.format(), file=file)
 
 rule create_report:
     input:
         con=expand("consensus/{{basename}}/{segment}.fna", segment=SEGMENTS),
-        mat=expand("seqs/{{basename}}/{segment}.mat.gz", segment=SEGMENTS)
+        mat="aln/{basename}/kma2.mat.gz"
     output:
         acc="consensus/{basename}/accepted.txt",
         rep="consensus/{basename}/report.txt",
-    params: f"{SNAKEDIR}/scripts/report.jl"
+    params:
+        juliacmd=JULIA_COMMAND,
+        scriptpath=f"{SNAKEDIR}/scripts/report.jl"
     log: "log/report/{basename}"
     run:
         conpaths = ",".join(input.con)
         matpaths = ",".join(input.mat)
-        shell(f"julia {{params}} {conpaths} {matpaths} {{output}} > {{log}}")
+        shell(f"{{params.juliacmd}} {{params.scriptpath}} {conpaths} {matpaths} {{output}} > {{log}}")
 
 checkpoint cat_reports:
     input: expand("consensus/{basename}/report.txt", basename=BASENAMES)
@@ -342,10 +342,12 @@ checkpoint cat_reports:
                         print('\t', line, sep='', end='', file=outfile)
 
 rule plot_depths:
-    input: expand("seqs/{{basename}}/{segment}.mat.gz", segment=SEGMENTS)
+    input: "seqs/{basename}/kma2.mat.gz"
     output: "depths/{basename}.pdf"
-    params: f"{SNAKEDIR}/scripts/covplot.jl"
-    shell: "julia {params} {output} {input}"
+    params:
+        juliacmd=JULIA_COMMAND,
+        scriptpath=f"{SNAKEDIR}/scripts/covplot.jl"
+    shell: "{params.juliacmd} {params.scriptpath} {output} {input}"
 
 ############################
 # IQTREE PART OF PIPELINE
