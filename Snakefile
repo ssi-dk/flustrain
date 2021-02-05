@@ -59,6 +59,8 @@ ruleorder: translate > trim_alignment > mafft > second_kma_map > gzip
 def done_input(wildcards):
     # Add report and the commit
     inputs = ["report.txt"]
+
+    # By adding this checkpoint, we can access stuff not existing yet
     checkpoints.cat_reports.get()
 
     for basename in BASENAMES:
@@ -71,13 +73,15 @@ def done_input(wildcards):
 
         # Add depth plot
         inputs.append(f"depths/{basename}.pdf")
-        with open(f"consensus/{basename}/accepted.txt") as accepted_file:
-            accepted = set(filter(None, map(str.strip, accepted_file)))
 
         # Add phylogeny - only for human viruses for which we have
-        # well defined subtypes. 
+        # well defined subtypes.
+        
         if config["refset"] == "human":
-            inputs.append(f"phylogeny/{basename}/HA.treefile")
+            with open(f"consensus/{basename}/consensus.fna") as file:
+                if any(line.strip() == f">{basename}_HA" for line in file):
+                    print("YES!!!")
+                    inputs.append(f"phylogeny/{basename}/HA.treefile")
 
     # TODO: Add mutation scanning here.
 
@@ -255,7 +259,6 @@ rule first_kma_map:
 # proper sequence. We do this before the final mapping step in order to get well-defined
 # start and stop of the sequenced part for the last round of mapping.
 
-
 rule remove_primers:
     input:
         con=rules.first_kma_map.output.fsa,
@@ -301,34 +304,23 @@ rule second_kma_map:
     threads: 2
     run:
         shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-        "-t {threads} -1t1 -gapopen -5 -nf -matrix 2> {log} || echo foo")
-
-rule move_consensus:
-    # We add this here so the untrimmed ones are not deleted too early.
-    input: expand(["aln/{basename}/kma2.fsa", "trim/{basename}/fw.fq.gz", "trim/{basename}/rv.fq.gz"], basename=BASENAMES)
-    output: expand("consensus/{basename}/{segment}.fna", segment=SEGMENTS, basename=BASENAMES)
-    params:
-        juliacmd=JULIA_COMMAND,
-        scriptpath=f"{SNAKEDIR}/scripts/move_consensus.jl",
-        segments=lambda wc: ",".join(SEGMENTS)
-    shell: "{params.juliacmd} {params.scriptpath} aln consensus {params.segments}"
-
+        "-t {threads} -1t1 -gapopen -5 -nf -matrix 2> {log}")
 
 rule create_report:
     input:
-        con=expand("consensus/{{basename}}/{segment}.fna", segment=SEGMENTS),
-        mat="aln/{basename}/kma2.mat.gz"
+        assembly=rules.second_kma_map.output.fsa,
+        matrix=rules.second_kma_map.output.mat,
     output:
-        acc="consensus/{basename}/accepted.txt",
-        rep="consensus/{basename}/report.txt",
+        consensus="consensus/{basename}/consensus.fna",
+        report="consensus/{basename}/report.txt",
     params:
         juliacmd=JULIA_COMMAND,
-        scriptpath=f"{SNAKEDIR}/scripts/report.jl"
+        scriptpath=f"{SNAKEDIR}/scripts/report.jl",
+        basename=lambda wc: wc.basename
     log: "log/report/{basename}"
     run:
-        conpaths = ",".join(input.con)
-        matpaths = ",".join(input.mat)
-        shell(f"{{params.juliacmd}} {{params.scriptpath}} {conpaths} {matpaths} {{output}} > {{log}}")
+        shell(f"{params.juliacmd} {params.scriptpath} consensus/{params.basename} "
+               "{params.basename} {input.assembly} {input.matrix} > {log}")
 
 checkpoint cat_reports:
     input: expand("consensus/{basename}/report.txt", basename=BASENAMES)
@@ -340,9 +332,10 @@ checkpoint cat_reports:
                     print(basename, file=outfile)
                     for line in infile:
                         print('\t', line, sep='', end='', file=outfile)
+                print("", file=outfile)
 
 rule plot_depths:
-    input: "seqs/{basename}/kma2.mat.gz"
+    input: "aln/{basename}/kma2.mat.gz"
     output: "depths/{basename}.pdf"
     params:
         juliacmd=JULIA_COMMAND,
@@ -359,9 +352,26 @@ def calc_subtype(wildcards):
         # Headers are of format ISOLATE|SUBTYPE|SEGMENT|CLADE
         return next(file).split('\t')[0].split('|')[1]
 
+rule extract_phylogeny_seq:
+    input: "consensus/{basename}/consensus.fna"
+    output: "phylogeny/{basename}/{segment}.fna"
+    run:
+        theentry = None
+        with tools.Reader(input[0], "rb") as file:
+            for entry in tools.byte_iterfasta(file):
+                if entry.header == f"{wildcards.basename}_{wildcards.segment}":
+                    theentry = entry
+                    break
+        
+        if theentry is None:
+            raise ValueError(f"Seq not found: {wildcards.segment}")
+
+        with open(output[0], "w") as file:
+            print(entry.format(), file=file)
+
 rule cat_ref_consensus:
     input:
-        consensus="consensus/{basename}/{segment}.fna",
+        consensus="phylogeny/{basename}/{segment}.fna",
         refaln=expand(REFOUTDIR + "/{{segment}}_{subtype}.aln.trimmed.fna", subtype=SUBTYPES)
     output: "phylogeny/{basename}/{segment}.cat.aln.trimmed.fna"
     params: lambda wc: REFOUTDIR + f"/{wc.segment}_{calc_subtype(wc)}.aln.trimmed.fna"
