@@ -79,7 +79,8 @@ records::Dict{String, Dict{UInt, FASTA.Record}})
         writer = open(FASTA.Writer, joinpath(alndir, basename, "cat.fna"))
         for (segment, num) in vec
             record = records[segment][num]
-            newrecord = FASTA.Record(segment, FASTA.sequence(LongDNASeq, record))
+            header = FASTA.identifier(record) * '_' * segment
+            newrecord = FASTA.Record(header, FASTA.sequence(LongDNASeq, record))
             write(writer, newrecord)
         end
         close(writer)

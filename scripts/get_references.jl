@@ -12,6 +12,7 @@ using FASTX
 using BioSequences
 using ErrorTypes
 using Transducers
+using Serialization
 
 format_error(s) =  error("Unknown format: \"$s\"")
 function parse_name(s::Union{String, SubString})::Option{String}
@@ -163,14 +164,14 @@ variants(s::Segment) = @inbounds VARIANTS[reinterpret(UInt8, s) + 0x01]
 # No known influenza proteins has more than two ORFs
 struct Protein
     variant::ProteinVariant
-    orfs::Union{UnitRange{UInt16}, NTuple{2, UnitRange{UInt16}}}
+    orfs::Union{Tuple{UnitRange{UInt16}}, NTuple{2, UnitRange{UInt16}}}
 end
 
 # No infleunza segment has more than two known proteins
 struct Accession
     name::String
     segment::Segment
-    proteins::Union{Protein, NTuple{2, Protein}}
+    proteins::Union{Tuple{Protein}, NTuple{2, Protein}}
 end
 
 #########################################################
@@ -226,7 +227,7 @@ function parse_orf(s::AbstractString, segment::Segment,
         (r1, r2), (length(r1) + length(r2))
     else
         r1 = @? parse_range(s2)
-        r1, length(r1)
+        (r1,), length(r1)
     end
     # Return none if it's not divisible by three and thus cant be ORF
     iszero(len % 3) || return none
@@ -246,7 +247,7 @@ function load_orf_line(v::Vector{Protein}, line::AbstractString, segment::Segmen
 end
 
 function load_orf_data(io::IO, segmentof::Dict{String, Segment})
-    orfs = Dict{String, Union{Protein, NTuple{2, Protein}}}()
+    orfs = Dict{String, Union{Tuple{Protein}, NTuple{2, Protein}}}()
     v = Vector{Protein}()
     for line in eachline(io)
         id = first(split(line, '\t'))
@@ -254,7 +255,7 @@ function load_orf_data(io::IO, segmentof::Dict{String, Segment})
         segment === nothing && continue
         maybe_key = load_orf_line(v, line, segment)
         is_none(maybe_key) && continue
-        orfs[unwrap(maybe_key)] = length(v) == 2 ? Tuple(v) : first(v)
+        orfs[unwrap(maybe_key)] = length(v) == 2 ? Tuple(v) : (first(v),)
     end
     orfs
 end
@@ -330,7 +331,7 @@ function parse_all(lines)
     metas
 end
 
-records = open(parse_all, "processed/genomeset.filt.dat")
+records = open(parse_all, "/Users/jakobnissen/Downloads/INFLUENZA/processed/genomeset.filt.dat")
 segmentof = Dict(m.gi => m.segment for m in records)
 orf_dict = open("/Users/jakobnissen/Downloads/INFLUENZA/raw/influenza.dat") do io
     load_orf_data(io, segmentof)
@@ -353,7 +354,7 @@ filter!(records) do record
 end
 
 # Load in seqs by genbank acc number
-by_id = open(FASTA.Reader, "raw/influenza.fna") do reader
+by_id = open(FASTA.Reader, "/Users/jakobnissen/Downloads/INFLUENZA/raw/influenza.fna") do reader
     record = FASTA.Record()
     records = Dict{String, LongDNASeq}()
     while !eof(reader)
@@ -408,6 +409,23 @@ trimrange = Dict(
 filter!(fluseqs) do fluseq
     in(length(fluseq.seq), trimrange[fluseq.meta.segment])
 end
+
+#### With the fluseqs filtered, we can make a vector of (accession, orfs) pairs and
+# save it
+kept_accessions = Set(f.meta.gi for f in fluseqs)
+T = Tuple{UInt8, UnitRange{UInt16}}
+kept_orfs = Vector{Tuple{String, Union{T, NTuple{2, T}}}}[]
+for (acc, proteins) in orf_dict
+    if in(acc, kept_accessions)
+
+        for protein in proteins
+
+map(filter((acc, orfs) -> in(acc, kept_accessions), orf_dict) do (acc, orfs)
+    (acc, (reinterpret(UInt8, orf.variant, )))
+    in(acc, kept_accessions)
+kept_orfs = [(acc, orfs) for (acc, orfs) in orf_dict if in(acc, kept_accessions)]
+open("tmp/serialtest.jls", "w") do file
+    
 
 #### NOW WE CAN DEDUPLICATE ET CETERA
 
