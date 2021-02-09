@@ -1,7 +1,4 @@
 # TODO: Check for extra nt at ends, by aligning to a selection of conserved ends
-# TODO: Add multithreading
-
-module t
 
 using FASTX
 using BioSequences
@@ -106,11 +103,11 @@ end
 function merge_data_sources(assemblies::Dict{String, Dict{Segment, Option{Assembly}}},
     depths::Dict{String, Dict{Segment, Option{Vector{UInt32}}}},
     proteins::Dict{Tuple{Segment, String}, Vector{Protein}},
-)::Dict{String, Vector{Tuple{Segment, Option{SegmentData}}}}
-    result = Dict{String, Vector{Tuple{Segment, Option{SegmentData}}}}()
+)::Vector{Tuple{String, Vector{Tuple{Segment, Option{SegmentData}}}}}
+    result = Vector{Tuple{String, Vector{Tuple{Segment, Option{SegmentData}}}}}()
     for (basename, assembly_dict) in assemblies
         basename_result = Vector{Tuple{Segment, Option{SegmentData}}}()
-        result[basename] = basename_result
+        push!(result, (basename, basename_result))
         depths_dict = depths[basename]
         for (segment, maybe_assembly) in assembly_dict
             if is_none(maybe_assembly)
@@ -256,8 +253,8 @@ function load_proteins(references::Set{Tuple{Segment, String}}, refdir::Abstract
     result
 end
 
-function print_msg(io::IO, x::ErrorMessage, indent::Integer)
-    println(io, '\t'^indent, x.critical ? "ERROR: " : "       ", x.msg)
+function push_msg(lines::Vector{<:AbstractString}, x::ErrorMessage, indent::Integer)
+    push!(lines, "$('\t'^indent)$(x.critical ? "ERROR: " : "       ")$(x.msg)")
 end
 
 function gather_aln(protein::Protein, segment::LongDNASeq)
@@ -381,20 +378,20 @@ function load_assembly(assemblypath::AbstractString)::Dict{Segment, Option{Assem
     end
 end
 
-function print_report(report::IO, basename::AbstractString, data_vec::Vector{Tuple{Segment, Option{SegmentData}}})
-    println(report, basename, ':')
+function report_lines(basename::AbstractString, data_vec::Vector{Tuple{Segment, Option{SegmentData}}})
+    lines = [basename * ':']
     for (segment, maybe_data) in data_vec
-        print_report(report, segment, maybe_data)
+        push_report_lines!(lines, segment, maybe_data)
     end
-    println(report, "")
+    push!(lines, "")
 end
 
-function print_report(report::IO, segment, maybe_data::Option{SegmentData})
-    print(report, '\t', rpad(string(segment) * ": ", 5))
+function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data::Option{SegmentData})
+    beginning = '\t' * rpad(string(segment) * ":", 4)
 
     # Check presence of segment
     if is_none(maybe_data)
-        println(report, "\n\t\tERROR: Missing segment")
+        push!(lines, beginning * "\n\t\tERROR: Missing segment")
         return nothing
     end
     data = unwrap(maybe_data)
@@ -402,48 +399,49 @@ function print_report(report::IO, segment, maybe_data::Option{SegmentData})
     # Check segment length and return early if way too short
     minlen = min(length(data.seq), length(data.depths))
     if minlen < 2 * TERMINAL + 1
-        println(report, "\n\t\tERROR: Sequence or depths length: $minlen")
+        push!(lines, beginning * "\n\t\tERROR: Sequence or depths length: $minlen")
         return nothing
     end
 
     # Header: HA: depth 4.32e+03 coverage 1.000 
     mean_depth = sum(UInt, data.depths) / length(data.depths)
     coverage = count(!iszero, data.depths) / length(data.depths)
-    println(report, "depth $(@sprintf "%.2e" mean_depth) coverage $(@sprintf "%.3f" coverage)")
+    push!(lines, beginning * " depth $(@sprintf "%.2e" mean_depth) coverage $(@sprintf "%.3f" coverage)")
 
     # insignificant bases
     n_insignificant = count(data.insignificant)
     if !iszero(n_insignificant)
-        println(report, "\t\t       $(n_insignificant) bases insignificantly basecalled")
+        push!(lines, "\t\t       $(n_insignificant) bases insignificantly basecalled")
     end
 
     # Check for low depths
     lowdepth = count(x -> x < 25, @view data.depths[TERMINAL + 1: end - TERMINAL])
     if !iszero(lowdepth)
-        println(report, "\t\t       $lowdepth central bases with depth < 25")
+        push!(lines, "\t\t       $lowdepth central bases with depth < 25")
     end
 
     # Check for ambiguous bases
     amb = count(isambiguous, data.seq)
     if !iszero(amb)
-        println(report, "\t\t       $amb ambiguous bases in consensus sequence")
+        push!(lines, "\t\t       $amb ambiguous bases in consensus sequence")
     end
 
     for protein in data.proteins
         (errors, indel_messages) = protein_errors(protein, data.seq)
 
         if length(indel_messages) > 5
-            println(report, "\t\t", protein.var.critical ? "ERROR:" : "      ",
+            push!(lines, "\t\t", protein.var.critical ? "ERROR:" : "      ",
             " Numerous indels in $(protein.var)")
         else
             for msg in indel_messages
-                print_msg(report, msg, 2)
+                push_msg(lines, msg, 2)
             end
         end
         for msg in errors
-            print_msg(report, msg, 2)
+            push_msg(lines, msg, 2)
         end
     end
+    lines
 end
 
 function plot_depths(path::AbstractString, data_vec::Vector{Tuple{Segment, Option{SegmentData}}})
@@ -464,14 +462,17 @@ function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::Abs
     basenames = readdir(alnpath)
     
     # Load depths and assemblies
-    depths = Dict{String, Dict{Segment, Option{Vector{UInt32}}}}()
-    assemblies = Dict{String, Dict{Segment, Option{Assembly}}}()
-    for basename in basenames
-        depths[basename] = load_depths(joinpath(alnpath, basename, matfilename))
-        assemblies[basename] = load_assembly(joinpath(alnpath, basename, assemblyfilename))
+    (depths, assemblies) = let
+        d = Vector{Dict{Segment, Option{Vector{UInt32}}}}(undef, length(basenames))
+        a = Vector{Dict{Segment, Option{Assembly}}}(undef, length(basenames))
+        Threads.@threads for (i, basename) in collect(enumerate(basenames))
+            d[i] = load_depths(joinpath(alnpath, basename, matfilename))
+            a[i] = load_assembly(joinpath(alnpath, basename, assemblyfilename))
+        end
+        (Dict(zip(basenames, d)), Dict(zip(basenames, a)))
     end
     
-    # Load proteins - here we must give it the 
+    # Load proteins - here we must give it which sequences to load
     proteins = let
         references = Set{Tuple{Segment, String}}()
         for segment_dict in values(assemblies)
@@ -484,11 +485,18 @@ function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::Abs
     end
 
     segment_data = merge_data_sources(assemblies, depths, proteins)
-
+    
     # Create the report
+    lines_vectors = Vector{Vector{String}}(undef, length(basenames))
+    Threads.@threads for (i, (basename, data_vec)) in collect(enumerate(segment_data))
+        lines_vectors[i] = report_lines(basename, data_vec)
+    end
+
     open(reportpath, "w") do report
-        for (basename, data_vec) in segment_data
-            print_report(report, basename, data_vec)
+        for linevec in lines_vectors
+            for line in linevec
+                println(report, line)
+            end
         end
     end
 
@@ -502,7 +510,7 @@ function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::Abs
         end
     end
 
-    # Create depths plots
+    # Create depths plots - plotting in inherently not threadsafe
     for (basename, data_vec) in segment_data
         plot_depths(joinpath(depthsdir, basename * ".pdf"), data_vec)
     end
@@ -514,5 +522,3 @@ if abspath(PROGRAM_FILE) == @__FILE__
     end
     main(ARGS...)
 end
-
-end # module

@@ -1,3 +1,5 @@
+# TODO: Report.txt needs to be generated with sysimg.
+
 import sys
 import os
 import itertools as it
@@ -308,19 +310,20 @@ rule second_kma_map:
 
 rule create_report:
     input:
-        assembly=rules.second_kma_map.output.fsa,
-        matrix=rules.second_kma_map.output.mat,
+        matrix=expand("aln/{basename}/kma2.mat.gz", basename=BASENAMES),
+        assembly=expand("aln/{basename}/kma2.fsa", basename=BASENAMES)
     output:
-        consensus="consensus/{basename}/consensus.fna",
-        report="consensus/{basename}/report.txt",
+        consensus=expand("consensus/{basename}/consensus.fna", basename=BASENAMES),
+        report="report.txt",
+        depths=expand("depths/{basename}.pdf", basename=BASENAMES)
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/report.jl",
-        basename=lambda wc: wc.basename
-    log: "log/report/{basename}"
+        refdir=REFDIR
+    log: "log/report.txt"
     run:
-        shell(f"{params.juliacmd} {params.scriptpath} consensus/{params.basename} "
-               "{params.basename} {input.assembly} {input.matrix} > {log}")
+        shell(f"julia --startup-file=no {params.scriptpath} consensus report.txt " #{params.juliacmd} {params.scriptpath}
+               "depths aln kma2.fsa kma2.mat.gz {params.refdir} > {log}")
 
 checkpoint cat_reports:
     input: expand("consensus/{basename}/report.txt", basename=BASENAMES)
@@ -333,14 +336,6 @@ checkpoint cat_reports:
                     for line in infile:
                         print('\t', line, sep='', end='', file=outfile)
                 print("", file=outfile)
-
-rule plot_depths:
-    input: "aln/{basename}/kma2.mat.gz"
-    output: "depths/{basename}.pdf"
-    params:
-        juliacmd=JULIA_COMMAND,
-        scriptpath=f"{SNAKEDIR}/scripts/covplot.jl"
-    shell: "{params.juliacmd} {params.scriptpath} {output} {input}"
 
 ############################
 # IQTREE PART OF PIPELINE
