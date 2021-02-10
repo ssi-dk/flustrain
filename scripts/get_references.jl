@@ -255,6 +255,7 @@ function load_orf_data(io::IO, segmentof::Dict{String, Segment})
         segment === nothing && continue
         maybe_key = load_orf_line(v, line, segment)
         is_none(maybe_key) && continue
+        haskey(orfs, unwrap(maybe_key)) && error("Duplicate key $(unwrap(maybe_key))!")
         orfs[unwrap(maybe_key)] = length(v) == 2 ? Tuple(v) : (first(v),)
     end
     orfs
@@ -410,23 +411,6 @@ filter!(fluseqs) do fluseq
     in(length(fluseq.seq), trimrange[fluseq.meta.segment])
 end
 
-#### With the fluseqs filtered, we can make a vector of (accession, orfs) pairs and
-# save it
-kept_accessions = Set(f.meta.gi for f in fluseqs)
-T = Tuple{UInt8, UnitRange{UInt16}}
-kept_orfs = Vector{Tuple{String, Union{T, NTuple{2, T}}}}[]
-for (acc, proteins) in orf_dict
-    if in(acc, kept_accessions)
-
-        for protein in proteins
-
-map(filter((acc, orfs) -> in(acc, kept_accessions), orf_dict) do (acc, orfs)
-    (acc, (reinterpret(UInt8, orf.variant, )))
-    in(acc, kept_accessions)
-kept_orfs = [(acc, orfs) for (acc, orfs) in orf_dict if in(acc, kept_accessions)]
-open("tmp/serialtest.jls", "w") do file
-    
-
 #### NOW WE CAN DEDUPLICATE ET CETERA
 
 # Create a unfilt for each segment
@@ -436,7 +420,7 @@ for species in [avian, swine]
         seqs = filter(hostseqs) do seq
             seq.meta.segment == segment
         end
-        open("processed/$species/$segment.fna", "w") do file
+        open("/Users/jakobnissen/Downloads/INFLUENZA/processed/$species/$segment.fna", "w") do file
             for seq in seqs
                 println(file, '>', seq.meta.gi, '\n', seq.seq)
             end
@@ -448,22 +432,54 @@ end
 exec = "/Users/jakobnissen/miniconda3/envs/bioinfo/bin/cd-hit-est"
 for species in [avian, swine]
     Threads.@threads for segment in instances(Segment)
-        inpath = "processed/$species/$segment.fna"
+        inpath = "/Users/jakobnissen/Downloads/INFLUENZA/processed/$species/$segment.fna"
         outpath = inpath * ".cdhit"
         command = `$exec -i $inpath -o $outpath -aS 0.9 -c 0.95`
         run(command)
     end
 end
 
+#### For each of the kept sequences, we get the ORF and serialize it to a file!.
+for species in [avian, swine]
+    for segment in instances(Segment)
+    # Load the kept seqs!
+        deduplicated_headers = open("/Users/jakobnissen/Downloads/INFLUENZA/processed/$species/$segment.fna.cdhit") do file
+            [line[2:end] for line in eachline(file) if startswith(line, '>')]
+        end
+
+        T = Tuple{UInt8, Union{Tuple{UnitRange{UInt16}}, NTuple{2, UnitRange{UInt16}}}}
+        kept_orfs = Vector{Tuple{String, Union{Tuple{T}, NTuple{2, T}}}}()
+        for acc in deduplicated_headers
+            proteins = orf_dict[acc]
+            in(acc, kept_accessions) || continue
+            v = map(proteins) do protein
+                (reinterpret(UInt8, protein.variant), protein.orfs)
+            end
+            push!(kept_orfs, (acc, v))
+        end
+
+        open("/Users/jakobnissen/Downloads/INFLUENZA/processed/$species/$segment.orf.jls", "w") do file
+            serialize(file, kept_orfs)
+        end
+    end
+end
+
 # Move to the correct directory (commented out for safety)
 
+cd("/Users/jakobnissen/Downloads/INFLUENZA/")
 target_dir = "/Users/jakobnissen/Documents/ssi/projects/flupipe/ref/"
 for species in [avian, swine]
     subdir = joinpath(target_dir, string(species))
     isdir(subdir) || mkdir(subdir)
     for segment in instances(Segment)
+        # Move copied file
         cp("processed/$species/$segment.fna.cdhit",
         "$subdir/$segment.fna",
+        force=true)
+
+        # Move serialized ORFs
+        cp("processed/$species/$segment.orf.jls",
+        "$subdir/$segment.orfs.jls",
         force=true)
     end
 end

@@ -1,20 +1,19 @@
+REFDIR = "/Users/jakobnissen/Documents/ssi/projects/flupipe/ref/swine"
+
 module Trim
     include("../trim_consensus.jl")
 end
 
 Trim.trim_consensus("primers.fna", "test.fna", "out.fna", 4)
 
-module CovPlot
-    include("../covplot.jl")
-end
-
-CovPlot.main("out.pdf", ["NS.mat.gz"])
-
 module Report
     include("../report.jl")
 end
 
-Report.main(["NS.fsa"], ["NS.mat.gz"], "out.acc", "out.report")
+mkdir("out")
+mkdir("out/depths")
+mkdir("out/foo")
+Report.main("out", "out/report.txt", "out/depths", "aln", "kma2.fsa", "kma2.mat.gz", REFDIR)
 
 #=
 module Nanofilt

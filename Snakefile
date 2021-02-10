@@ -9,9 +9,8 @@ sys.path.append(os.path.join(SNAKEDIR, "scripts"))
 import tools
 
 # We only need this because Julia 1.6 segfaults with PkgCompiler at the moment
-JULIA_PATH = "/Applications/Julia-1.5.app/Contents/Resources/julia/bin/julia"
 SYSIMG_PATH = os.path.join(SNAKEDIR, "scripts", "sysimg", "sysimg.so")
-JULIA_COMMAND = f"{JULIA_PATH} --startup-file=no --project={SNAKEDIR} -J {SYSIMG_PATH}"
+JULIA_COMMAND = f"julia --startup-file=no --project={SNAKEDIR} -J {SYSIMG_PATH}"
 
 ######################################################
 # GLOBAL CONSTANTS
@@ -63,18 +62,16 @@ def done_input(wildcards):
     inputs = ["report.txt"]
 
     # By adding this checkpoint, we can access stuff not existing yet
-    checkpoints.cat_reports.get()
+    checkpoints.create_report.get()
 
     for basename in BASENAMES:
         # Add trimmed FASTQ
         for direction in ["fw", "rv"]:
             inputs.append(f"trim/{basename}/{direction}.fq.gz")
 
-        # Add individual report
-        inputs.append(f"consensus/{basename}/report.txt")
-
         # Add depth plot
         inputs.append(f"depths/{basename}.pdf")
+        inputs.append(f"consensus/{basename}/consensus.fna")
 
         # Add phylogeny - only for human viruses for which we have
         # well defined subtypes.
@@ -186,8 +183,8 @@ rule fastp:
         fw=lambda wildcards: READ_PAIRS[wildcards.basename][0],
         rv=lambda wildcards: READ_PAIRS[wildcards.basename][1],
     output:
-        fw='trim/{basename}/fw.fq',
-        rv='trim/{basename}/rv.fq',
+        fw=temp('trim/{basename}/fw.fq'),
+        rv=temp('trim/{basename}/rv.fq'),
         html='trim/{basename}/report.html',
         json='trim/{basename}/report.json'
     log: "log/fastp/{basename}.log"
@@ -213,7 +210,7 @@ rule initial_kma_map:
     params:
         db=REFOUTDIR + "/{segment}", # same as index_reffile param
         outbase="aln/{basename}/{segment}"
-    threads: 2
+    threads: 1
     log: "log/aln/{basename}_{segment}.initial.log"
     shell:
         "kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
@@ -221,7 +218,7 @@ rule initial_kma_map:
 
 rule gather_spa:
     input: expand("aln/{basename}/{segment}.spa", segment=SEGMENTS, basename=BASENAMES)
-    output: expand("aln/{basename}/cat.fna", basename=BASENAMES)
+    output: temp(expand("aln/{basename}/cat.fna", basename=BASENAMES))
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/gather_spa.jl",
@@ -231,10 +228,10 @@ rule gather_spa:
 rule first_kma_index:
     input: "aln/{basename}/cat.fna"
     output:
-        comp="aln/{basename}/cat.comp.b",
-        name="aln/{basename}/cat.name",
-        length="aln/{basename}/cat.length.b",
-        seq="aln/{basename}/cat.seq.b"
+        comp=temp("aln/{basename}/cat.comp.b"),
+        name=temp("aln/{basename}/cat.name"),
+        length=temp("aln/{basename}/cat.length.b"),
+        seq=temp("aln/{basename}/cat.seq.b")
     params:
         t_db="aln/{basename}/cat"
     log: "log/aln/kma1_index_{basename}.log"
@@ -270,10 +267,11 @@ rule remove_primers:
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/trim_consensus.jl",
-        minmatches=4
+        minmatches=4,
+        fuzzylen=8,
     run:
         shell("{params.juliacmd} {params.scriptpath} {input.primers} "
-              "{input.con} {output} {params.minmatches} > {log}")
+              "{input.con} {output} {params.minmatches} {params.fuzzylen} > {log}")
 
 # We now re-map to the created consensus sequence in order to accurately
 # estimate depths and coverage, and get a more reliable assembly seq.
@@ -291,10 +289,12 @@ rule second_kma_index:
 
 # And now we KMA map to that index again
 rule second_kma_map:
-    input: 
+    input:
         fw=rules.fastp.output.fw,
         rv=rules.fastp.output.rv,
-        index=rules.second_kma_index.output
+        index=rules.second_kma_index.output,
+        keepfw="trim/{basename}/fw.fq.gz",
+        keeprv="trim/{basename}/rv.fq.gz"
     output:
         mat="aln/{basename}/kma2.mat.gz",
         res="aln/{basename}/kma2.res",
@@ -308,7 +308,7 @@ rule second_kma_map:
         shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
         "-t {threads} -1t1 -gapopen -5 -nf -matrix 2> {log}")
 
-rule create_report:
+checkpoint create_report:
     input:
         matrix=expand("aln/{basename}/kma2.mat.gz", basename=BASENAMES),
         assembly=expand("aln/{basename}/kma2.fsa", basename=BASENAMES)
@@ -321,21 +321,10 @@ rule create_report:
         scriptpath=f"{SNAKEDIR}/scripts/report.jl",
         refdir=REFDIR
     log: "log/report.txt"
+    threads: workflow.cores
     run:
-        shell(f"julia --startup-file=no {params.scriptpath} consensus report.txt " #{params.juliacmd} {params.scriptpath}
+        shell(f"{params.juliacmd} -t {threads} {params.scriptpath} consensus report.txt "
                "depths aln kma2.fsa kma2.mat.gz {params.refdir} > {log}")
-
-checkpoint cat_reports:
-    input: expand("consensus/{basename}/report.txt", basename=BASENAMES)
-    output: "report.txt"
-    run:
-        with open(output[0], "w") as outfile:
-            for basename in BASENAMES:
-                with open(f"consensus/{basename}/report.txt") as infile:
-                    print(basename, file=outfile)
-                    for line in infile:
-                        print('\t', line, sep='', end='', file=outfile)
-                print("", file=outfile)
 
 ############################
 # IQTREE PART OF PIPELINE

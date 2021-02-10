@@ -123,10 +123,9 @@ function merge_data_sources(assemblies::Dict{String, Dict{Segment, Option{Assemb
             smt = SegmentData(depth, assembly.insignificant, assembly.seq, prots)
             push!(basename_result, (segment, Thing(smt)))
         end
-        sort!(basename_result, by=x -> first(x))
+        sort!(basename_result, by=first)
     end
-
-    result
+    sort!(result, by=first)
 end
 
 function Base.join(v::AbstractVector{T}) where T <: LongSequence
@@ -429,8 +428,8 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     for protein in data.proteins
         (errors, indel_messages) = protein_errors(protein, data.seq)
 
-        if length(indel_messages) > 5
-            push!(lines, "\t\t", protein.var.critical ? "ERROR:" : "      ",
+        if length(indel_messages) > 4
+            push!(lines, "\t\t" * (is_critical(protein.var) ? "ERROR:" : "      ") *
             " Numerous indels in $(protein.var)")
         else
             for msg in indel_messages
