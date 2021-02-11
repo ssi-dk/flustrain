@@ -5,10 +5,17 @@ using ErrorTypes
 using FASTX
 using BioSequences
 
+@enum Segment::UInt8 PB1 PB2 PA HA NP NA MP NS
+const _STR_SEGMENT = Dict(map(i -> string(i)=>i, instances(Segment)))
+Segment(s::AbstractString) = get(() -> error("Unknown segment: \"$(s)\""), _STR_SEGMENT, s)
+
+# Gets the first column of the second line, or None if there is only the header
+# (i.e. no good matches)
 function readspa(path::AbstractString)::Option{UInt}
     open(path) do file
         lines = eachline(file)
-        iterate(lines) # header
+        (header, _) = iterate(lines) # header
+        @assert startswith(header, "#Template\tNum\t")
         nextline = iterate(lines)
         nextline === nothing && return none
         line = strip(first(nextline))
@@ -18,54 +25,50 @@ function readspa(path::AbstractString)::Option{UInt}
     end
 end
 
-"Get a basename => [\"HA\" => 42, \"NA\" => 11] for all present, mapping segments"
+"Get a dict: basename => (HA => 5) for all present, mapping segments"
 function make_numdict(alndir::AbstractString)
-    numdict = Dict{String, Vector{Tuple{String, UInt}}}()
-    basenames = readdir(alndir)
-    for basename in basenames
-        spas = filter(readdir(joinpath(alndir, basename))) do filename
-            endswith(filename, ".spa")
+    numdict = Dict{String, Vector{Tuple{Segment, UInt}}}()
+    for basename in readdir(alndir)
+        v = Tuple{Segment, UInt}[]
+        for segment in instances(Segment)
+            num = @unwrap_or readspa(joinpath(alndir, basename, string(segment) * ".spa")) continue
+            push!(v, (segment, num))
         end
-        sort!(spas)
-        segments = map(spas) do filename
-            filename[1 : findfirst(isequal('.'), filename) - 1]
-        end
-        vec = Vector{Tuple{String, UInt}}()
-        numdict[basename] = vec
-        for (segment, spa) in zip(segments, spas)
-            num = readspa(joinpath(alndir, basename, spa))
-            is_none(num) && continue
-            push!(vec, (segment, unwrap(num)))
-        end
+        numdict[basename] = v
     end
     numdict
 end
 
-function collect_sequences(refdir::AbstractString, numdict::Dict{String, Vector{Tuple{String, UInt}}})
+function collect_sequences(refdir::AbstractString, numdict::Dict{String, Vector{Tuple{Segment, UInt}}})
     # First get a Dict("HA" => Set(1, 2, 3)) of present nums
-    present = Dict{String, Set{UInt}}()
+    present = Dict{Segment, Set{UInt}}()
     for (basename, vec) in numdict
         for (segment, num) in vec
-            haskey(present, segment) || (present[segment] = Set{UInt}())
-            push!(present[segment], num)
+            push!(get!(Set{UInt}, present, segment), num)
         end
     end
 
     # Then iterate over all segments, fetching the ones in the set
-    records = Dict{String, Dict{UInt, FASTA.Record}}()
+    records = Dict{Segment, Dict{UInt, FASTA.Record}}()
     for (segment, set) in present
         dict = Dict{UInt, FASTA.Record}()
         records[segment] = dict
-        refpath = joinpath(refdir, segment * ".fna")
-        open(FASTA.Reader, refpath) do reader
-            seqnum = 0
+        fastapath = joinpath(refdir, string(segment) * ".fna")
+        open(FASTA.Reader, fastapath) do reader
+            isempty(set) && return nothing
+            seqnum = UInt(0)
             record = FASTA.Record()
+            lastnum = maximum(set)
             while !eof(reader)
                 read!(reader, record)
-                seqnum += 1
+                seqnum += UInt(1)
                 if in(seqnum, set)
                     dict[seqnum] = copy(record)
                 end
+                seqnum == lastnum && break
+            end
+            if seqnum < lastnum
+                error("FASTA $fastapath requested num $lastnum, has only $seqnum records")
             end
         end
     end
@@ -73,13 +76,13 @@ function collect_sequences(refdir::AbstractString, numdict::Dict{String, Vector{
     return records
 end
 
-function dump_sequences(alndir::AbstractString, numdict::Dict{String, Vector{Tuple{String, UInt}}},
-records::Dict{String, Dict{UInt, FASTA.Record}})
+function dump_sequences(alndir::AbstractString, numdict::Dict{String, Vector{Tuple{Segment, UInt}}},
+records::Dict{Segment, Dict{UInt, FASTA.Record}})
     for (basename, vec) in numdict
         writer = open(FASTA.Writer, joinpath(alndir, basename, "cat.fna"))
         for (segment, num) in vec
             record = records[segment][num]
-            header = FASTA.identifier(record) * '_' * segment
+            header = FASTA.identifier(record) * '_' * string(segment)
             newrecord = FASTA.Record(header, FASTA.sequence(LongDNASeq, record))
             write(writer, newrecord)
         end

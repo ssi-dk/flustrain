@@ -1,5 +1,3 @@
-# TODO: Report.txt needs to be generated with sysimg.
-
 import sys
 import os
 import itertools as it
@@ -51,7 +49,7 @@ SUBTYPES = ["H1N1", "H3N2", "Victoria", "Yamagata"]
 ######################################################
 # Start of pipeline
 ######################################################
-ruleorder: translate > trim_alignment > mafft > second_kma_map > gzip
+ruleorder: translate > trim_alignment > mafft > second_kma_map > first_kma_map > gzip
 
 # We add the checkpoiint output here just to make sure the checkpoint is included
 # in the DAG
@@ -146,7 +144,7 @@ rule index_ref:
     # The pipeline is very sensitive to the value of k here.
     # Too low means the mapping is excruciatingly slow,
     # too high results in very poor mapping quality.
-    shell: "kma index -k 12 -i {input} -o {params.outpath} 2> {log}"
+    shell: "kma index -k 12 -Sparse - -i {input} -o {params.outpath} 2> {log}"
 
 
 rule split_ref_subtype:
@@ -213,8 +211,10 @@ rule initial_kma_map:
     threads: 1
     log: "log/aln/{basename}_{segment}.initial.log"
     shell:
+        # Sort by template coverate (-ss c), otherwise "best" template will
+        # be driven by erroneous sequencing kmers
         "kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-        "-t {threads} -Sparse 2> {log}"
+        "-t {threads} -Sparse -ss c 2> {log}"
 
 rule gather_spa:
     input: expand("aln/{basename}/{segment}.spa", segment=SEGMENTS, basename=BASENAMES)
@@ -244,7 +244,8 @@ rule first_kma_map:
         index=rules.first_kma_index.output,
     output:
         res="aln/{basename}/kma1.res",
-        fsa="aln/{basename}/kma1.fsa"
+        fsa="aln/{basename}/kma1.fsa",
+        mat="aln/{basename}/kma1.mat.gz",
     params:
         db="aln/{basename}/cat",
         outbase="aln/{basename}/kma1",
@@ -252,7 +253,7 @@ rule first_kma_map:
     threads: 2
     run:
         shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-        "-t {threads} -1t1 -gapopen -5 -nf 2> {log}")
+        "-t {threads} -1t1 -gapopen -5 -nf -matrix 2> {log}")
 
 # In our current lab setup, we use primers to amplify our influeza segments. But these do not have the
 # proper sequence. We do this before the final mapping step in order to get well-defined
@@ -296,7 +297,6 @@ rule second_kma_map:
         keepfw="trim/{basename}/fw.fq.gz",
         keeprv="trim/{basename}/rv.fq.gz"
     output:
-        mat="aln/{basename}/kma2.mat.gz",
         res="aln/{basename}/kma2.res",
         fsa="aln/{basename}/kma2.fsa"
     params:
@@ -306,11 +306,11 @@ rule second_kma_map:
     threads: 2
     run:
         shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-        "-t {threads} -1t1 -gapopen -5 -nf -matrix 2> {log}")
+        "-t {threads} -1t1 -gapopen -5 -nf -na 2> {log}")
 
 checkpoint create_report:
     input:
-        matrix=expand("aln/{basename}/kma2.mat.gz", basename=BASENAMES),
+        matrix=expand("aln/{basename}/kma1.mat.gz", basename=BASENAMES),
         assembly=expand("aln/{basename}/kma2.fsa", basename=BASENAMES)
     output:
         consensus=expand("consensus/{basename}/consensus.fna", basename=BASENAMES),
@@ -324,7 +324,7 @@ checkpoint create_report:
     threads: workflow.cores
     run:
         shell(f"{params.juliacmd} -t {threads} {params.scriptpath} consensus report.txt "
-               "depths aln kma2.fsa kma2.mat.gz {params.refdir} > {log}")
+               "depths aln kma2.fsa kma1.mat.gz {params.refdir} > {log}")
 
 ############################
 # IQTREE PART OF PIPELINE

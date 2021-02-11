@@ -18,17 +18,7 @@ const TERMINAL = 25
 
 Create a representaiton of one of the eight Influenza A genome segments.
 """
-@enum Segment::UInt8 begin
-    PB1
-    PB2
-    PA
-    HA
-    NP
-    NA
-    MP
-    NS
-end
-
+@enum Segment::UInt8 PB1 PB2 PA HA NP NA MP NS
 const _STR_SEGMENT = Dict(map(i -> string(i)=>i, instances(Segment)))
 function Segment(s::AbstractString)
     smt = get(_STR_SEGMENT, s, nothing)
@@ -36,21 +26,7 @@ function Segment(s::AbstractString)
     smt
 end
 
-@enum ProteinVariant::UInt8 begin
-    pb2
-    pb1
-    pb1fa
-    pa
-    pax
-    ha
-    np
-    na
-    m1
-    m2
-    ns1
-    nep
-end
-
+@enum ProteinVariant::UInt8 pb2 pb1 pb1fa pa pax ha np na m1 m2 ns1 nep
 function Base.print(io::IO, var::ProteinVariant)
     str = if var == pb1fa
         "PB1-FA"
@@ -62,8 +38,7 @@ function Base.print(io::IO, var::ProteinVariant)
     print(io, str)
 end
 
-const _CRITICAL = [true, true, false, true, false, 
-    true, true, true, true, true, true, true]
+const _CRITICAL = Bool[1,1,0,1,0,1,1,1,1,1,1,1]
 is_critical(x::ProteinVariant) = @inbounds _CRITICAL[reinterpret(UInt8, x) + 0x01]
 
 const ALN_MODEL = AffineGapScoreModel(EDNAFULL, gap_open=-25, gap_extend=-2)
