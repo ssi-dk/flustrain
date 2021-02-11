@@ -50,8 +50,9 @@ end
 
 # Data retrieved from the reference files
 struct Protein
+    src::LongDNASeq
     var::ProteinVariant
-    seqs::Vector{LongDNASeq}
+    frames::Vector{UnitRange{UInt16}}
 end
 
 # Data retrieved from the .fsa files
@@ -209,9 +210,8 @@ function load_proteins(references::Set{Tuple{Segment, String}}, refdir::Abstract
                     seq = seqof[accession]
                     resvec = Protein[]
                     result[(segment, accession)] = resvec
-                    for protein in v
-                        protseqs = [seq[orf] for orf in protein[2]]
-                        push!(resvec, Protein(ProteinVariant(protein[1]), protseqs))
+                    for (var_uint8, orf_tuple) in v
+                        push!(resvec, Protein(seq, ProteinVariant(var_uint8), collect(orf_tuple)))
                     end
                     push!(added_accessions, accession)
                 end
@@ -234,7 +234,8 @@ end
 function gather_aln(protein::Protein, segment::LongDNASeq)
     seg_nucs, prot_nucs, poss = DNA[], DNA[], UInt16[]
     errs = ErrorMessage[]
-    for (exnonnum, coding_seq) in enumerate(protein.seqs)
+    for (exnonnum, coding_orf) in enumerate(protein.frames)
+        coding_seq = protein.src[coding_orf]
         aln = pairalign(OverlapAlignment(), coding_seq, segment, ALN_MODEL).aln
         alnrange = aln.a.aln.firstref : aln.a.aln.lastref
         segpos = 0
@@ -317,6 +318,25 @@ function protein_errors(protein::Protein, segment::LongDNASeq
     return (errors, indel_messages)
 end
 
+# This function gets the identity between a segment and its reference
+function get_identity(seqa::LongDNASeq, seqb::LongDNASeq)
+    aln = pairalign(OverlapAlignment(), seqa, seqb, ALN_MODEL).aln
+    seq, ref = fill(DNA_Gap, length(aln)), fill(DNA_Gap, length(aln))
+    for (i, (seqnt, refnt)) in enumerate(aln)
+        seq[i] = seqnt
+        ref[i] = refnt
+    end
+    start = max(findfirst(!isgap, seq), findfirst(!isgap, ref))
+    stop = min(findlast(!isgap, seq), findlast(!isgap, ref))
+    id = count(zip(view(seq, start:stop), view(ref, start:stop))) do pair
+        first(pair) === last(pair)
+    end / length(start:stop)
+end
+
+function get_identity(data::SegmentData)
+    @assert all(p.src === first(data.proteins).src for p in data.proteins)
+    get_identity(data.seq, first(data.proteins).src)
+end
 
 # We only have this to reconstruct the record - including the lowercase letters.
 function FASTA.Record(basename::AbstractString, segment::Segment,
@@ -380,7 +400,15 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     # Header: HA: depth 4.32e+03 coverage 1.000 
     mean_depth = sum(UInt, data.depths) / length(data.depths)
     coverage = count(!iszero, data.depths) / length(data.depths)
-    push!(lines, beginning * " depth $(@sprintf "%.2e" mean_depth) coverage $(@sprintf "%.3f" coverage)")
+    identity = get_identity(data)
+    depthstr = "depth $(@sprintf "%.2e" mean_depth)"
+    covstr = "coverage $(@sprintf "%.3f" coverage)"
+    idstr = "identity $(@sprintf "%.3f" identity)"
+    push!(lines, beginning * " $depthstr $covstr $idstr")
+
+    # Warning if coverage or identity is too low
+    coverage < 0.9 && push!(lines, "\t\t ERROR: Coverage is less than 90%")
+    identity < 0.9 && push!(lines, "\t\t ERROR: Identity is less than 90%")
 
     # insignificant bases
     n_insignificant = count(data.insignificant)
