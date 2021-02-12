@@ -50,9 +50,13 @@ end
 
 # Data retrieved from the reference files
 struct Protein
-    src::LongDNASeq
     var::ProteinVariant
-    frames::Vector{UnitRange{UInt16}}
+    orfs::Vector{UnitRange{UInt16}}
+end
+
+struct Reference
+    seq::LongDNASeq
+    proteins::Vector{Protein}
 end
 
 # Data retrieved from the .fsa files
@@ -68,6 +72,7 @@ struct SegmentData
     depths::Vector{UInt32}
     insignificant::BitVector
     seq::LongDNASeq
+    refseq::LongDNASeq
     proteins::Vector{Protein}
 end
 
@@ -78,7 +83,7 @@ end
 
 function merge_data_sources(assemblies::Dict{String, Dict{Segment, Option{Assembly}}},
     depths::Dict{String, Dict{Segment, Option{Vector{UInt32}}}},
-    proteins::Dict{Tuple{Segment, String}, Vector{Protein}},
+    references::Dict{Tuple{Segment, String}, Reference},
 )::Vector{Tuple{String, Vector{Tuple{Segment, Option{SegmentData}}}}}
     result = Vector{Tuple{String, Vector{Tuple{Segment, Option{SegmentData}}}}}()
     for (basename, assembly_dict) in assemblies
@@ -94,9 +99,8 @@ function merge_data_sources(assemblies::Dict{String, Dict{Segment, Option{Assemb
                 "Segment $segment of basename $basename found in assembly, but not in matrix"
             )
             assembly = unwrap(maybe_assembly)
-
-            prots = proteins[(segment, assembly.accession)]
-            smt = SegmentData(depth, assembly.insignificant, assembly.seq, prots)
+            reference = references[(segment, assembly.accession)]
+            smt = SegmentData(depth, assembly.insignificant, assembly.seq, reference.seq, reference.proteins)
             push!(basename_result, (segment, Thing(smt)))
         end
         sort!(basename_result, by=first)
@@ -173,8 +177,8 @@ function load_depths(matpath::AbstractString)::Dict{Segment, Option{Vector{UInt3
     end
 end
 
-function load_proteins(references::Set{Tuple{Segment, String}}, refdir::AbstractString
-)::Dict{Tuple{Segment, String}, Vector{Protein}}
+function load_references(references::Set{Tuple{Segment, String}}, refdir::AbstractString
+)::Dict{Tuple{Segment, String}, Reference}
     # Group segments
     bysegment = Dict{Segment, Set{String}}()
     for (segment, accession) in references
@@ -182,7 +186,7 @@ function load_proteins(references::Set{Tuple{Segment, String}}, refdir::Abstract
     end
 
     record = FASTA.Record()
-    result = Dict{Tuple{Segment, String}, Vector{Protein}}()
+    result = Dict{Tuple{Segment, String}, Reference}()
     for (segment, accessions) in bysegment
         seqpath = joinpath(refdir, "$segment.fna")
         orfpath = joinpath(refdir, "$segment.orfs.jls")
@@ -207,11 +211,10 @@ function load_proteins(references::Set{Tuple{Segment, String}}, refdir::Abstract
                     if !haskey(seqof, accession)
                         error("Accession $accession missing from $seqpath")
                     end
-                    seq = seqof[accession]
-                    resvec = Protein[]
-                    result[(segment, accession)] = resvec
+                    reference = Reference(seqof[accession], Protein[])
+                    result[(segment, accession)] = reference
                     for (var_uint8, orf_tuple) in v
-                        push!(resvec, Protein(seq, ProteinVariant(var_uint8), collect(orf_tuple)))
+                        push!(reference.proteins, Protein(ProteinVariant(var_uint8), collect(orf_tuple)))
                     end
                     push!(added_accessions, accession)
                 end
@@ -231,11 +234,11 @@ function push_msg(lines::Vector{<:AbstractString}, x::ErrorMessage, indent::Inte
     push!(lines, "$('\t'^indent)$(x.critical ? "ERROR: " : "       ")$(x.msg)")
 end
 
-function gather_aln(protein::Protein, segment::LongDNASeq)
+function gather_aln(protein::Protein, refseq::LongDNASeq, segment::LongDNASeq)
     seg_nucs, prot_nucs, poss = DNA[], DNA[], UInt16[]
     errs = ErrorMessage[]
-    for (exnonnum, coding_orf) in enumerate(protein.frames)
-        coding_seq = protein.src[coding_orf]
+    for (exnonnum, coding_orf) in enumerate(protein.orfs)
+        coding_seq = refseq[coding_orf]
         aln = pairalign(OverlapAlignment(), coding_seq, segment, ALN_MODEL).aln
         alnrange = aln.a.aln.firstref : aln.a.aln.lastref
         segpos = 0
@@ -262,9 +265,9 @@ function gather_aln(protein::Protein, segment::LongDNASeq)
     (LongDNASeq(seg_nucs), LongDNASeq(prot_nucs), poss, errs)
 end
 
-function protein_errors(protein::Protein, segment::LongDNASeq
+function protein_errors(protein::Protein, refseq::LongDNASeq, segment::LongDNASeq
 )::Tuple{Vector{ErrorMessage}, Vector{ErrorMessage}}
-    segseq, coding_seq, positions, errors = gather_aln(protein, segment)
+    segseq, coding_seq, positions, errors = gather_aln(protein, refseq, segment)
     indel_messages = ErrorMessage[]
     n_del = n_ins = 0
     for (segnt, coding_nt, pos) in zip(segseq, coding_seq, positions)
@@ -334,8 +337,7 @@ function get_identity(seqa::LongDNASeq, seqb::LongDNASeq)
 end
 
 function get_identity(data::SegmentData)
-    @assert all(p.src === first(data.proteins).src for p in data.proteins)
-    get_identity(data.seq, first(data.proteins).src)
+    get_identity(data.seq, data.refseq)
 end
 
 # We only have this to reconstruct the record - including the lowercase letters.
@@ -429,7 +431,7 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     end
 
     for protein in data.proteins
-        (errors, indel_messages) = protein_errors(protein, data.seq)
+        (errors, indel_messages) = protein_errors(protein, data.refseq, data.seq)
 
         if length(indel_messages) > 4
             push!(lines, "\t\t" * (is_critical(protein.var) ? "ERROR:" : "      ") *
@@ -447,7 +449,7 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
 end
 
 function plot_depths(path::AbstractString, data_vec::Vector{Tuple{Segment, Option{SegmentData}}})
-    plt = plot()
+    plt = plot(ylabel="Log10 depths", xticks=nothing, ylim=(-0.1, 5))
     for (segment, maybe_data) in data_vec
         data = @unwrap_or maybe_data continue
         ys = log10.(data.depths)
@@ -474,19 +476,19 @@ function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::Abs
         (Dict(zip(basenames, d)), Dict(zip(basenames, a)))
     end
     
-    # Load proteins - here we must give it which sequences to load
-    proteins = let
-        references = Set{Tuple{Segment, String}}()
+    # Load references - here we must give it which sequences to load
+    references = let
+        accessions = Set{Tuple{Segment, String}}()
         for segment_dict in values(assemblies)
             for (segment, maybe_assembly) in segment_dict
                 assembly = @unwrap_or maybe_assembly continue
-                push!(references, (segment, assembly.accession))
+                push!(accessions, (segment, assembly.accession))
             end
         end
-        load_proteins(references, refdir)
+        load_references(accessions, refdir)
     end
 
-    segment_data = merge_data_sources(assemblies, depths, proteins)
+    segment_data = merge_data_sources(assemblies, depths, references)
     
     # Create the report
     lines_vectors = Vector{Vector{String}}(undef, length(basenames))

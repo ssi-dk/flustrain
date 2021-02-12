@@ -9,53 +9,56 @@ using BioSequences
 const _STR_SEGMENT = Dict(map(i -> string(i)=>i, instances(Segment)))
 Segment(s::AbstractString) = get(() -> error("Unknown segment: \"$(s)\""), _STR_SEGMENT, s)
 
+imap(f) = x -> Iterators.map(f, x)
+ifilter(f) = x -> Iterators.filter(f, x)
+
 # Gets the first column of the second line, or None if there is only the header
 # (i.e. no good matches)
 function readspa(path::AbstractString)::Option{UInt}
     open(path) do file
-        lines = eachline(file)
-        (header, _) = iterate(lines) # header
-        @assert startswith(header, "#Template\tNum\t")
-        nextline = iterate(lines)
-        nextline === nothing && return none
-        line = strip(first(nextline))
-        isempty(line) && return none
-        num = split(line, '\t')[2]
-        Thing(parse(UInt, num))
+        lines = eachline(file) |> imap(strip) |> ifilter(!isempty) |> imap(x -> split(x, '\t'))
+        fields = zip(lines, 1:2) |> imap(first) |> collect
+        @assert fields[1][1:2] == ["#Template", "Num"]
+        length(fields) < 2 ? none : Thing(parse(UInt, fields[2][2]))
     end
 end
 
 "Get a dict: basename => (HA => 5) for all present, mapping segments"
-function make_numdict(alndir::AbstractString)
-    numdict = Dict{String, Vector{Tuple{Segment, UInt}}}()
-    for basename in readdir(alndir)
-        v = Tuple{Segment, UInt}[]
-        for segment in instances(Segment)
-            num = @unwrap_or readspa(joinpath(alndir, basename, string(segment) * ".spa")) continue
-            push!(v, (segment, num))
-        end
-        numdict[basename] = v
-    end
-    numdict
+function make_numdict(alndir::AbstractString)::Dict{String, Vector{Tuple{Segment, UInt}}}
+    readdir(alndir) |> imap() do basename
+        # Iterator of (segment, maybe_num)
+        instances(Segment) |> imap() do segment
+            (segment, readspa(joinpath(alndir, basename, string(segment) * ".spa")))
+        end |>
+        # Remove the nones
+        ifilter() do (segment, maybe_num)
+            !is_none(maybe_num)
+        end |>
+        # Unwrap the nones
+        imap() do (segment, maybe_num)
+            (segment, unwrap(maybe_num))
+        end |>
+        # Convert iterator to (basename, [elements])
+        (it -> (basename, collect(it)))
+    end |>
+    Dict
 end
 
 function collect_sequences(refdir::AbstractString, numdict::Dict{String, Vector{Tuple{Segment, UInt}}})
     # First get a Dict("HA" => Set(1, 2, 3)) of present nums
     present = Dict{Segment, Set{UInt}}()
-    for (basename, vec) in numdict
-        for (segment, num) in vec
-            push!(get!(Set{UInt}, present, segment), num)
-        end
+    for (basename, vec) in numdict, (segment, num) in vec
+        push!(get!(Set{UInt}, present, segment), num)
     end
 
     # Then iterate over all segments, fetching the ones in the set
     records = Dict{Segment, Dict{UInt, FASTA.Record}}()
     for (segment, set) in present
+        isempty(set) && continue
         dict = Dict{UInt, FASTA.Record}()
         records[segment] = dict
         fastapath = joinpath(refdir, string(segment) * ".fna")
         open(FASTA.Reader, fastapath) do reader
-            isempty(set) && return nothing
             seqnum = UInt(0)
             record = FASTA.Record()
             lastnum = maximum(set)
@@ -72,7 +75,6 @@ function collect_sequences(refdir::AbstractString, numdict::Dict{String, Vector{
             end
         end
     end
-
     return records
 end
 
@@ -97,5 +99,8 @@ function main(alndir::AbstractString, refdir::AbstractString)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
+    if length(ARGS) != 2
+        error("Usage: julia gather_spa.jl alndir refdir")
+    end
     main(ARGS[1], ARGS[2])
 end

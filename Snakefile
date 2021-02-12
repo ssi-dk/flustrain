@@ -199,7 +199,7 @@ rule gzip:
     shell: "gzip -k {input}"
 
 # Do this to get the best template, -Sparse option is designed for this.
-rule initial_kma_map:
+rule map_best_template:
     input:
         fw=rules.fastp.output.fw,
         rv=rules.fastp.output.rv,
@@ -216,7 +216,7 @@ rule initial_kma_map:
         "kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
         "-t {threads} -Sparse -ss c 2> {log}"
 
-rule gather_spa:
+rule collect_best_templates:
     input: expand("aln/{basename}/{segment}.spa", segment=SEGMENTS, basename=BASENAMES)
     output: temp(expand("aln/{basename}/cat.fna", basename=BASENAMES))
     params:
