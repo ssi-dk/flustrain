@@ -324,7 +324,7 @@ checkpoint create_report:
     threads: workflow.cores
     run:
         shell(f"{params.juliacmd} -t {threads} {params.scriptpath} consensus report.txt "
-               "depths aln kma2.fsa kma1.mat.gz {params.refdir} > {log}")
+               "depths aln kma2.fsa kma2.res kma1.mat.gz {params.refdir} > {log}")
 
 ############################
 # IQTREE PART OF PIPELINE

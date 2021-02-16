@@ -13,6 +13,9 @@ using Plots
 # in which we have more lax requirements for depth
 const TERMINAL = 25
 
+imap(f) = x -> Iterators.map(f, x)
+ifilter(f) = x -> Iterators.filter(f, x)
+
 """
     Segment(::String) -> Segment
 
@@ -70,6 +73,7 @@ end
 # consistent with each other (which is distinct from them being internally consistent)
 struct SegmentData
     depths::Vector{UInt32}
+    assembly_identity::Float64
     insignificant::BitVector
     seq::LongDNASeq
     refseq::LongDNASeq
@@ -84,6 +88,7 @@ end
 function merge_data_sources(assemblies::Dict{String, Dict{Segment, Option{Assembly}}},
     depths::Dict{String, Dict{Segment, Option{Vector{UInt32}}}},
     references::Dict{Tuple{Segment, String}, Reference},
+    asm_identities::Dict{String, Dict{Segment, Option{Float64}}}
 )::Vector{Tuple{String, Vector{Tuple{Segment, Option{SegmentData}}}}}
     result = Vector{Tuple{String, Vector{Tuple{Segment, Option{SegmentData}}}}}()
     for (basename, assembly_dict) in assemblies
@@ -100,7 +105,8 @@ function merge_data_sources(assemblies::Dict{String, Dict{Segment, Option{Assemb
             )
             assembly = unwrap(maybe_assembly)
             reference = references[(segment, assembly.accession)]
-            smt = SegmentData(depth, assembly.insignificant, assembly.seq, reference.seq, reference.proteins)
+            asm_id = unwrap(asm_identities[basename][segment])
+            smt = SegmentData(depth, asm_id, assembly.insignificant, assembly.seq, reference.seq, reference.proteins)
             push!(basename_result, (segment, Thing(smt)))
         end
         sort!(basename_result, by=first)
@@ -172,6 +178,24 @@ function load_depths(matpath::AbstractString)::Dict{Segment, Option{Vector{UInt3
         end
         for segment in instances(Segment)
             haskey(result, segment) || (result[segment] = none)
+        end
+        result
+    end
+end
+
+# Here, we load template identities from kma2.res. If a template has <99.5% identity,
+# it means the first assembly did not converge.
+function load_res_file(resfilename::AbstractString)::Dict{Segment, Option{Float64}}
+    open(resfilename) do io
+        fields = Vector{SubString{String}}(undef, 11)
+        lines = eachline(io)
+        header, _ = iterate(lines)
+        result = Dict(s => None{Float64}() for s in instances(Segment))
+        @assert header == "#Template\tScore\tExpected\tTemplate_length\tTemplate_Identity\tTemplate_Coverage\tQuery_Identity\tQuery_Coverage\tDepth\tq_value\tp_value"
+        for fields in (lines |> imap(strip) |> ifilter(!isempty) |> imap(x -> split!(fields, x, UInt8('\t'))))
+            segment = Segment(strip(last(rsplit(first(fields), '_', limit=2))))
+            is_none(result[segment]) || error("Segment $(string(segment)) present twice in file $resfilename")
+            result[segment] = Thing(parse(Float64, fields[5]) / 100)
         end
         result
     end
@@ -412,6 +436,11 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     coverage < 0.9 && push!(lines, "\t\t ERROR: Coverage is less than 90%")
     identity < 0.9 && push!(lines, "\t\t ERROR: Identity is less than 90%")
 
+    # Warning if identity b/w first and second assembly too low (asm not converged)
+    if data.assembly_identity < 0.995
+        push!(lines, "\t\t       Id. b/w first and second asm low: $(@sprintf "%.4f" data.assembly_identity)")
+    end
+
     # insignificant bases
     n_insignificant = count(data.insignificant)
     if !iszero(n_insignificant)
@@ -460,20 +489,22 @@ function plot_depths(path::AbstractString, data_vec::Vector{Tuple{Segment, Optio
 end
 
 function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::AbstractString,
-    alnpath::AbstractString, assemblyfilename::AbstractString,
+    alnpath::AbstractString, assemblyfilename::AbstractString, resfilename::AbstractString,
     matfilename::AbstractString, refdir::AbstractString
 )
     basenames = readdir(alnpath)
     
-    # Load depths and assemblies
-    (depths, assemblies) = let
+    # Load depths, assemblies and assembly identities
+    (depths, assemblies, asm_identities) = let
         d = Vector{Dict{Segment, Option{Vector{UInt32}}}}(undef, length(basenames))
         a = Vector{Dict{Segment, Option{Assembly}}}(undef, length(basenames))
+        id = Vector{Dict{Segment, Option{Float64}}}(undef, length(basenames))
         Threads.@threads for (i, basename) in collect(enumerate(basenames))
             d[i] = load_depths(joinpath(alnpath, basename, matfilename))
             a[i] = load_assembly(joinpath(alnpath, basename, assemblyfilename))
+            id[i] = load_res_file(joinpath(alnpath, basename, resfilename))
         end
-        (Dict(zip(basenames, d)), Dict(zip(basenames, a)))
+        (Dict(zip(basenames, d)), Dict(zip(basenames, a)), Dict(zip(basenames, id)))
     end
     
     # Load references - here we must give it which sequences to load
@@ -488,7 +519,7 @@ function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::Abs
         load_references(accessions, refdir)
     end
 
-    segment_data = merge_data_sources(assemblies, depths, references)
+    segment_data = merge_data_sources(assemblies, depths, references, asm_identities)
     
     # Create the report
     lines_vectors = Vector{Vector{String}}(undef, length(basenames))
@@ -521,8 +552,8 @@ function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::Abs
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    if length(ARGS) != 7
-        error("Usage: julia report.jl outdir reportpath depthsdir alnpath asmname matname refdir")
+    if length(ARGS) != 8
+        error("Usage: julia report.jl outdir reportpath depthsdir alnpath asmname resname matname refdir")
     end
     main(ARGS...)
 end
