@@ -87,33 +87,28 @@ struct ErrorMessage
     msg::String
 end
 
-function merge_data_sources(assemblies::Dict{String, Dict{Segment, Option{Assembly}}},
-    depths::Dict{String, Dict{Segment, Option{Vector{UInt32}}}},
+function merge_data_sources(assemblies::Dict{Segment, Option{Assembly}},
+    depths::Dict{Segment, Option{Vector{UInt32}}},
     references::Dict{Tuple{Segment, String}, Reference},
-    asm_identities::Dict{String, Dict{Segment, Option{Float64}}}
-)::Vector{Tuple{String, Vector{Tuple{Segment, Option{SegmentData}}}}}
-    result = Vector{Tuple{String, Vector{Tuple{Segment, Option{SegmentData}}}}}()
-    for (basename, assembly_dict) in assemblies
-        basename_result = Vector{Tuple{Segment, Option{SegmentData}}}()
-        push!(result, (basename, basename_result))
-        depths_dict = depths[basename]
-        for (segment, maybe_assembly) in assembly_dict
-            if is_none(maybe_assembly)
-                push!(basename_result, (segment, none))
-                continue
-            end
-            depth = expect(depths_dict[segment],
-                "Segment $segment of basename $basename found in assembly, but not in matrix"
-            )
-            assembly = unwrap(maybe_assembly)
-            reference = references[(segment, assembly.accession)]
-            asm_id = unwrap(asm_identities[basename][segment])
-            (seq, ref) = (assembly.seq, reference.seq)
-            aln = pairalign(OverlapAlignment(), seq, ref, ALN_MODEL).aln
-            smt = SegmentData(depth, asm_id, assembly.insignificant, seq, ref, aln, reference.proteins)
-            push!(basename_result, (segment, Thing(smt)))
+    asm_identities::Dict{Segment, Option{Float64}}
+)::Vector{Tuple{Segment, Option{SegmentData}}}
+    
+    result = Vector{Tuple{Segment, Option{SegmentData}}}()
+    for (segment, maybe_assembly) in assemblies
+        if is_none(maybe_assembly)
+            push!(result, (segment, none))
+            continue
         end
-        sort!(basename_result, by=first)
+        depth = expect(depths[segment],
+            "Segment $segment of basename $basename found in assembly, but not in matrix"
+        )
+        assembly = unwrap(maybe_assembly)
+        reference = references[(segment, assembly.accession)]
+        asm_id = unwrap(asm_identities[segment])
+        (seq, ref) = (assembly.seq, reference.seq)
+        aln = pairalign(OverlapAlignment(), seq, ref, ALN_MODEL).aln
+        smt = SegmentData(depth, asm_id, assembly.insignificant, seq, ref, aln, reference.proteins)
+        push!(result, (segment, Thing(smt)))
     end
     sort!(result, by=first)
 end
@@ -516,29 +511,25 @@ function plot_depths(path::AbstractString, data_vec::Vector{Tuple{Segment, Optio
     savefig(plt, path)
 end
 
-function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::AbstractString,
-    alnpath::AbstractString, assemblyfilename::AbstractString, resfilename::AbstractString,
+function load_all_data(basenames::Vector{String}, alnpath::AbstractString,
+    assemblyfilename::AbstractString,  resfilename::AbstractString,
     matfilename::AbstractString, refdir::AbstractString
-)
-    basenames = readdir(alnpath)
+)::Vector{Tuple{String, Vector{Tuple{Segment, Option{SegmentData}}}}}
     
     # Load depths, assemblies and assembly identities
-    (depths, assemblies, asm_identities) = let
-        d = Vector{Dict{Segment, Option{Vector{UInt32}}}}(undef, length(basenames))
-        a = Vector{Dict{Segment, Option{Assembly}}}(undef, length(basenames))
-        id = Vector{Dict{Segment, Option{Float64}}}(undef, length(basenames))
-        Threads.@threads for (i, basename) in collect(enumerate(basenames))
-            d[i] = load_depths(joinpath(alnpath, basename, matfilename))
-            a[i] = load_assembly(joinpath(alnpath, basename, assemblyfilename))
-            id[i] = load_res_file(joinpath(alnpath, basename, resfilename))
-        end
-        (Dict(zip(basenames, d)), Dict(zip(basenames, a)), Dict(zip(basenames, id)))
+    depths = Vector{Any}(nothing, length(basenames))
+    assemblies = copy(depths)
+    identities = copy(depths)
+
+    Threads.@threads for (i, basename) in collect(enumerate(basenames))
+        depths[i] = load_depths(joinpath(alnpath, basename, matfilename))
+        assemblies[i] = load_assembly(joinpath(alnpath, basename, assemblyfilename))
+        identities[i] = load_res_file(joinpath(alnpath, basename, resfilename))
     end
-    
-    # Load references - here we must give it which sequences to load
-    references = let
+
+    references::Dict{Tuple{Segment, String}, Reference} = let
         accessions = Set{Tuple{Segment, String}}()
-        for segment_dict in values(assemblies)
+        for segment_dict in assemblies
             for (segment, maybe_assembly) in segment_dict
                 assembly = @unwrap_or maybe_assembly continue
                 push!(accessions, (segment, assembly.accession))
@@ -547,9 +538,21 @@ function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::Abs
         load_references(accessions, refdir)
     end
 
-    # TODO: Parallelize this
-    segment_data = merge_data_sources(assemblies, depths, references, asm_identities)
-    
+    # Now merge it
+    data_vec = Vector{Any}(nothing, length(basenames))
+    Threads.@threads for i in eachindex(depths)
+        data_vec[i] = merge_data_sources(assemblies[i], depths[i], references, identities[i])
+    end
+    sort!(collect(zip(basenames, data_vec)), by=first)
+end
+
+function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::AbstractString,
+    alnpath::AbstractString, assemblyfilename::AbstractString, resfilename::AbstractString,
+    matfilename::AbstractString, refdir::AbstractString
+)
+    basenames = readdir(alnpath)
+    segment_data = load_all_data(basenames, alnpath, assemblyfilename, resfilename, matfilename, refdir)
+
     # Create the report
     lines_vectors = Vector{Vector{String}}(undef, length(basenames))
     Threads.@threads for (i, (basename, data_vec)) in collect(enumerate(segment_data))
