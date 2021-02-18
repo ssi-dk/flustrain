@@ -54,7 +54,8 @@ end
 # Data retrieved from the reference files
 struct Protein
     var::ProteinVariant
-    orfs::Vector{UnitRange{UInt16}}
+    # a bitvector over its reference seq with 1s for coding nucleotides, incl last stop
+    mask::BitVector
 end
 
 struct Reference
@@ -77,6 +78,7 @@ struct SegmentData
     insignificant::BitVector
     seq::LongDNASeq
     refseq::LongDNASeq
+    aln::PairwiseAlignment{LongDNASeq, LongDNASeq}
     proteins::Vector{Protein}
 end
 
@@ -106,7 +108,9 @@ function merge_data_sources(assemblies::Dict{String, Dict{Segment, Option{Assemb
             assembly = unwrap(maybe_assembly)
             reference = references[(segment, assembly.accession)]
             asm_id = unwrap(asm_identities[basename][segment])
-            smt = SegmentData(depth, asm_id, assembly.insignificant, assembly.seq, reference.seq, reference.proteins)
+            (seq, ref) = (assembly.seq, reference.seq)
+            aln = pairalign(OverlapAlignment(), seq, ref, ALN_MODEL).aln
+            smt = SegmentData(depth, asm_id, assembly.insignificant, seq, ref, aln, reference.proteins)
             push!(basename_result, (segment, Thing(smt)))
         end
         sort!(basename_result, by=first)
@@ -235,10 +239,15 @@ function load_references(references::Set{Tuple{Segment, String}}, refdir::Abstra
                     if !haskey(seqof, accession)
                         error("Accession $accession missing from $seqpath")
                     end
-                    reference = Reference(seqof[accession], Protein[])
+                    seq = seqof[accession]
+                    reference = Reference(seq, Protein[])
                     result[(segment, accession)] = reference
                     for (var_uint8, orf_tuple) in v
-                        push!(reference.proteins, Protein(ProteinVariant(var_uint8), collect(orf_tuple)))
+                        mask = falses(length(seq))
+                        for orf in orf_tuple
+                            @view(mask[orf]) .= true
+                        end
+                        push!(reference.proteins, Protein(ProteinVariant(var_uint8), mask))
                     end
                     push!(added_accessions, accession)
                 end
@@ -258,44 +267,56 @@ function push_msg(lines::Vector{<:AbstractString}, x::ErrorMessage, indent::Inte
     push!(lines, "$('\t'^indent)$(x.critical ? "ERROR: " : "       ")$(x.msg)")
 end
 
-function gather_aln(protein::Protein, refseq::LongDNASeq, segment::LongDNASeq)
-    seg_nucs, prot_nucs, poss = DNA[], DNA[], UInt16[]
-    errs = ErrorMessage[]
-    for (exnonnum, coding_orf) in enumerate(protein.orfs)
-        coding_seq = refseq[coding_orf]
-        aln = pairalign(OverlapAlignment(), coding_seq, segment, ALN_MODEL).aln
-        alnrange = aln.a.aln.firstref : aln.a.aln.lastref
-        segpos = 0
-        for (coding_nt, segnt) in aln
-            if segnt == DNA_Gap
-                if segpos == last(alnrange)
-                    # This happens if the segment ends abruptly
-                    push!(errs, ErrorMessage(true, 
-                        "Exon $exnonnum of $(protein.var) runs over edge of segment"))
-                    break
-                end
-            else
-                segpos += 1
-            end
-            if in(segpos, alnrange)
-                push!(seg_nucs, segnt)
-                push!(prot_nucs, coding_nt)
-                push!(poss, segpos)
-            elseif segpos > last(alnrange)
-                break
-            end
-        end
-    end
-    (LongDNASeq(seg_nucs), LongDNASeq(prot_nucs), poss, errs)
+is_stop(x::DNACodon) = (x === mer"TAA") | (x === mer"TAG") | (x === mer"TGA")
+
+"Adds one nt at the end of the codon, moving it. If nt is ambiguous, return AAA"
+function push_codon(x::DNACodon, nt::DNA)
+    val = @inbounds BioSequences.twobitnucs[reinterpret(UInt8, nt) + 1]
+    enc = (reinterpret(UInt64, x) << 2 | val) & UInt64(0x3f)
+    reinterpret(DNACodon, ifelse(val === 0xff, zero(UInt), enc))
 end
 
-function protein_errors(protein::Protein, refseq::LongDNASeq, segment::LongDNASeq
+"Given an aln b/w ref and whole segment, return (seqnucs, refnucs, pos_in_seg)"
+function gather_aln(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNASeq})
+    seg_nucs, ref_nucs, seg_positions = DNA[], DNA[], UInt16[]
+    seg_pos = ref_pos = num_seg_nt = zero(UInt16)
+    last_ref_pos = findlast(protein.mask)
+    codon = mer"AAA"
+    expected_stop = ErrorTypes.None{Int}()
+    for (seg_nt, ref_nt) in aln
+        seg_pos += (seg_nt !== DNA_Gap)
+        ref_pos += (ref_nt !== DNA_Gap)
+        is_coding = protein.mask[ref_pos]
+
+        # If we're in an intron, don't do anything
+        !is_coding & (ref_pos < last_ref_pos) && continue
+
+        if seg_nt !== DNA_Gap
+            num_seg_nt += UInt16(1)
+            codon = push_codon(codon, seg_nt)
+        end
+
+        if ref_pos == last_ref_pos
+            expected_stop = Thing(seg_pos % Int)
+        end
+
+        push!(seg_nucs, seg_nt)
+        push!(ref_nucs, ref_nt)
+        push!(seg_positions, seg_pos)
+
+        # Only stop if we find a stop codon NOT in an intron
+        iszero(num_seg_nt % 3) & is_stop(codon) && break
+    end
+    return LongDNASeq(seg_nucs), LongDNASeq(ref_nucs), seg_positions, expected_stop
+end
+
+function protein_errors(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNASeq}
 )::Tuple{Vector{ErrorMessage}, Vector{ErrorMessage}}
-    segseq, coding_seq, positions, errors = gather_aln(protein, refseq, segment)
-    indel_messages = ErrorMessage[]
+    seg_nucs, ref_nucs, seg_positions, expected_stop = gather_aln(protein, aln)
+    errors, indel_messages = ErrorMessage[], ErrorMessage[]
     n_del = n_ins = 0
-    for (segnt, coding_nt, pos) in zip(segseq, coding_seq, positions)
-        if segnt == DNA_Gap
+    for (seg_nt, ref_nt, pos) in zip(seg_nucs, ref_nucs, seg_positions)
+        if seg_nt == DNA_Gap
             n_del += 1
         elseif !iszero(n_del)
             if !iszero(n_del % 3)
@@ -308,7 +329,7 @@ function protein_errors(protein::Protein, refseq::LongDNASeq, segment::LongDNASe
             n_del = 0
         end
 
-        if coding_nt == DNA_Gap
+        if ref_nt == DNA_Gap
             n_ins += 1
         elseif !iszero(n_ins)
             if !iszero(n_ins % 3)
@@ -321,26 +342,34 @@ function protein_errors(protein::Protein, refseq::LongDNASeq, segment::LongDNASe
             n_ins = 0
         end
     end
-    seq = ungap(segseq)
+    seq = ungap(seg_nucs)
     
-    # Now, check for stops etc.
+    # Is seq length divisible by three?
     remnant = length(seq) % 3
     if !iszero(remnant)
         push!(errors, ErrorMessage(is_critical(protein.var),
             "$(protein.var) length is $(length(seq)) nt, not divisible by 3"))
     end
+
+    # Does it not end with a stop codon?
     aaseq = BioSequences.translate(iszero(remnant) ? seq : seq[1:end-remnant])
     stoppos = findfirst(AA_Term, aaseq)
-    if stoppos !== nothing && stoppos != lastindex(aaseq)
+    if stoppos === nothing
         push!(errors, ErrorMessage(is_critical(protein.var),
-            "$(protein.var) stops at aa $(stoppos), expected $(length(aaseq))"))
+            "$(protein.var) does not have a stop codon."))
     end
 
-    # If no stop codon, this may be an error, or it may just mean the protein
-    # stop further down the DNA chain. In any case, it probably merits manual
-    # checking.
-    if stoppos === nothing
-        push!(errors, ErrorMessage(false, "$(protein.var): No stop codon. Perhaps elongated protein?"))
+    # Does it have a stop codon too early or too late?
+    if is_none(expected_stop)
+        push!(errors, ErrorMessage(is_critical(protein.var),
+        "$(protein.var) has an early stop at pos $(last(seg_positions))."))
+    else
+        exp_stop = unwrap(expected_stop)
+        if exp_stop != last(seg_positions)
+            @assert last(seg_positions) > exp_stop
+            push!(errors, ErrorMessage(false,
+            "$(protein.var) stops late, at pos $(last(seg_positions)), expected pos $(exp_stop)."))
+        end
     end
     
     sort!(errors, rev=true, by=x -> x.critical)
@@ -349,8 +378,7 @@ function protein_errors(protein::Protein, refseq::LongDNASeq, segment::LongDNASe
 end
 
 # This function gets the identity between a segment and its reference
-function get_identity(seqa::LongDNASeq, seqb::LongDNASeq)
-    aln::PairwiseAlignment = pairalign(OverlapAlignment(), seqa, seqb, ALN_MODEL).aln
+function get_identity(aln::PairwiseAlignment{LongDNASeq, LongDNASeq})
     seq, ref = fill(DNA_Gap, length(aln)), fill(DNA_Gap, length(aln))
     for (i, (seqnt, refnt)) in enumerate(aln)
         seq[i] = seqnt
@@ -361,10 +389,6 @@ function get_identity(seqa::LongDNASeq, seqb::LongDNASeq)
     id = count(zip(view(seq, start:stop), view(ref, start:stop))) do pair
         first(pair) === last(pair)
     end / length(start:stop)
-end
-
-function get_identity(data::SegmentData)
-    get_identity(data.seq, data.refseq)
 end
 
 # We only have this to reconstruct the record - including the lowercase letters.
@@ -430,7 +454,7 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     # Header: HA: depth 4.32e+03 coverage 1.000 
     mean_depth = sum(UInt, data.depths) / length(data.depths)
     coverage = count(!iszero, data.depths) / length(data.depths)
-    identity = get_identity(data)
+    identity = get_identity(data.aln)
     depthstr = "depth $(@sprintf "%.2e" mean_depth)"
     covstr = "coverage $(@sprintf "%.3f" coverage)"
     idstr = "identity $(@sprintf "%.3f" identity)"
@@ -464,7 +488,7 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     end
 
     for protein in data.proteins
-        (errors, indel_messages) = protein_errors(protein, data.refseq, data.seq)
+        (errors, indel_messages) = protein_errors(protein, data.aln)
 
         if length(indel_messages) > 4
             push!(lines, "\t\t" * (is_critical(protein.var) ? "ERROR:" : "      ") *
@@ -523,6 +547,7 @@ function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::Abs
         load_references(accessions, refdir)
     end
 
+    # TODO: Parallelize this
     segment_data = merge_data_sources(assemblies, depths, references, asm_identities)
     
     # Create the report
