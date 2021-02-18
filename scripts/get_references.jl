@@ -13,6 +13,7 @@ using BioSequences
 using ErrorTypes
 using Transducers
 using Serialization
+using UnicodePlots
 
 format_error(s) =  error("Unknown format: \"$s\"")
 function parse_name(s::Union{String, SubString})::Option{String}
@@ -410,6 +411,36 @@ trimrange = Dict(
 filter!(fluseqs) do fluseq
     in(length(fluseq.seq), trimrange[fluseq.meta.segment])
 end
+
+function Base.join(seqs::Vector{LongSequence{A}}) where A
+    res = LongSequence{A}(sum(length, seqs))
+    offset = 0
+    for seq in seqs
+        res[offset+1:offset+length(seq)] = seq
+        offset += length(seq)
+    end
+    res
+end
+
+## Check that the ORFs are actually orfs
+filter!(fluseqs) do fluseq
+    acc = fluseq.meta.gi
+    proteins = orf_dict[acc]
+    for protein in proteins
+        seq = join([fluseq.seq[orf] for orf in protein.orfs])
+
+        # Length must be translatable (divisible by 3)
+        iszero(length(seq) % 3) || return false
+        aa = translate(seq)
+        pos = findfirst(AA_Term, aa)
+
+        # Last position must be a stop codon
+        if pos !== lastindex(aa)
+            return false
+        end
+    end
+    return true
+end;
 
 #### NOW WE CAN DEDUPLICATE ET CETERA
 

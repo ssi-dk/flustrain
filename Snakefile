@@ -77,7 +77,6 @@ def done_input(wildcards):
         if config["refset"] == "human":
             with open(f"consensus/{basename}/consensus.fna") as file:
                 if any(line.strip() == f">{basename}_HA" for line in file):
-                    print("YES!!!")
                     inputs.append(f"phylogeny/{basename}/HA.treefile")
 
     # TODO: Add mutation scanning here.
@@ -311,7 +310,8 @@ rule second_kma_map:
 checkpoint create_report:
     input:
         matrix=expand("aln/{basename}/kma1.mat.gz", basename=BASENAMES),
-        assembly=expand("aln/{basename}/kma2.fsa", basename=BASENAMES)
+        assembly=expand("aln/{basename}/kma2.fsa", basename=BASENAMES),
+        res=expand("aln/{basename}/kma2.res", basename=BASENAMES)
     output:
         consensus=expand("consensus/{basename}/consensus.fna", basename=BASENAMES),
         report="report.txt",

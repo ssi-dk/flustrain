@@ -153,7 +153,7 @@ function load_depths(matpath::AbstractString)::Dict{Segment, Option{Vector{UInt3
             if isempty(line)
                 if !isempty(depths)
                     haskey(result, segment) && error("Segment $segment present twice in $matpath")
-                    result[segment] = Thing(depths)
+                    result[segment::Segment] = Thing(depths)
                     depths = UInt32[]
                 end
                 continue
@@ -189,8 +189,8 @@ function load_res_file(resfilename::AbstractString)::Dict{Segment, Option{Float6
     open(resfilename) do io
         fields = Vector{SubString{String}}(undef, 11)
         lines = eachline(io)
-        header, _ = iterate(lines)
-        result = Dict(s => None{Float64}() for s in instances(Segment))
+        header, _ = iterate(lines)::NTuple{2, Any}
+        result = Dict(s => ErrorTypes.None{Float64}() for s in instances(Segment))
         @assert header == "#Template\tScore\tExpected\tTemplate_length\tTemplate_Identity\tTemplate_Coverage\tQuery_Identity\tQuery_Coverage\tDepth\tq_value\tp_value"
         for fields in (lines |> imap(strip) |> ifilter(!isempty) |> imap(x -> split!(fields, x, UInt8('\t'))))
             segment = Segment(strip(last(rsplit(first(fields), '_', limit=2))))
@@ -336,8 +336,11 @@ function protein_errors(protein::Protein, refseq::LongDNASeq, segment::LongDNASe
             "$(protein.var) stops at aa $(stoppos), expected $(length(aaseq))"))
     end
 
+    # If no stop codon, this may be an error, or it may just mean the protein
+    # stop further down the DNA chain. In any case, it probably merits manual
+    # checking.
     if stoppos === nothing
-        push!(errors, ErrorMessage(true,"$(protein.var): No stop codon"))
+        push!(errors, ErrorMessage(false, "$(protein.var): No stop codon. Perhaps elongated protein?"))
     end
     
     sort!(errors, rev=true, by=x -> x.critical)
@@ -347,7 +350,7 @@ end
 
 # This function gets the identity between a segment and its reference
 function get_identity(seqa::LongDNASeq, seqb::LongDNASeq)
-    aln = pairalign(OverlapAlignment(), seqa, seqb, ALN_MODEL).aln
+    aln::PairwiseAlignment = pairalign(OverlapAlignment(), seqa, seqb, ALN_MODEL).aln
     seq, ref = fill(DNA_Gap, length(aln)), fill(DNA_Gap, length(aln))
     for (i, (seqnt, refnt)) in enumerate(aln)
         seq[i] = seqnt
@@ -381,7 +384,8 @@ function load_assembly(assemblypath::AbstractString)::Dict{Segment, Option{Assem
     open(FASTA.Reader, assemblypath) do reader
         result = Dict{Segment, Option{Assembly}}()
         map(reader) do record
-            v = rsplit(FASTA.identifier(record), '_', limit=2)
+            id = FASTA.identifier(record)::String
+            v = rsplit(id, '_', limit=2)
             length(v) == 2 || error("Found header \"$(id)\", expected pattern \"HEADER_SEGMENT\"")
             accession = first(v)
             segment = Segment(last(v))
