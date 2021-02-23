@@ -19,7 +19,7 @@ function readspa(path::AbstractString)::Option{UInt}
         lines = eachline(file) |> imap(strip) |> ifilter(!isempty) |> imap(x -> split(x, '\t'))
         fields = zip(lines, 1:2) |> imap(first) |> collect
         @assert fields[1][1:2] == ["#Template", "Num"]
-        length(fields) < 2 ? none : Thing(parse(UInt, fields[2][2]))
+        length(fields) < 2 ? none : some(parse(UInt, fields[2][2]))
     end
 end
 
@@ -30,9 +30,10 @@ function make_numdict(alndir::AbstractString)::Dict{String, Vector{Tuple{Segment
         instances(Segment) |> imap() do segment
             (segment, readspa(joinpath(alndir, basename, string(segment) * ".spa")))
         end |>
-        # Remove the nones
+        # Remove the nones (interestingly, Julia PR 38905 should let the compiler
+        # remove the branch in the following unwrap due to this ifilter here. Cool stuff.)
         ifilter() do (segment, maybe_num)
-            !is_none(maybe_num)
+            !is_error(maybe_num)
         end |>
         # Unwrap the nones
         imap() do (segment, maybe_num)

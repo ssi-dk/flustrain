@@ -22,7 +22,7 @@ ifilter(f) = x -> Iterators.filter(f, x)
 Create a representaiton of one of the eight Influenza A genome segments.
 """
 @enum Segment::UInt8 PB1 PB2 PA HA NP NA MP NS
-const _STR_SEGMENT = Dict(map(i -> string(i)=>i, instances(Segment)))
+const _STR_SEGMENT = instances(Segment) |> imap(s -> string(s)=>s) |> Dict
 function Segment(s::AbstractString)
     smt = get(_STR_SEGMENT, s, nothing)
     smt === nothing && error("Unknown segment: \"$s\"")
@@ -87,6 +87,7 @@ struct ErrorMessage
     msg::String
 end
 
+"Create SegmentData from all data sources below"
 function merge_data_sources(assemblies::Dict{Segment, Option{Assembly}},
     depths::Dict{Segment, Option{Vector{UInt32}}},
     references::Dict{Tuple{Segment, String}, Reference},
@@ -95,7 +96,7 @@ function merge_data_sources(assemblies::Dict{Segment, Option{Assembly}},
     
     result = Vector{Tuple{Segment, Option{SegmentData}}}()
     for (segment, maybe_assembly) in assemblies
-        if is_none(maybe_assembly)
+        if is_error(maybe_assembly)
             push!(result, (segment, none))
             continue
         end
@@ -108,7 +109,7 @@ function merge_data_sources(assemblies::Dict{Segment, Option{Assembly}},
         (seq, ref) = (assembly.seq, reference.seq)
         aln = pairalign(OverlapAlignment(), seq, ref, ALN_MODEL).aln
         smt = SegmentData(depth, asm_id, assembly.insignificant, seq, ref, aln, reference.proteins)
-        push!(result, (segment, Thing(smt)))
+        push!(result, (segment, some(smt)))
     end
     sort!(result, by=first)
 end
@@ -148,11 +149,11 @@ function load_depths(matpath::AbstractString)::Dict{Segment, Option{Vector{UInt3
         depths = UInt32[]
         fields = Vector{SubString{String}}(undef, 7)
         linedepths = Vector{UInt32}(undef, 6)
-        for line in Iterators.map(strip, eachline(GzipDecompressorStream(io)))
+        for line in eachline(GzipDecompressorStream(io)) |> imap(string)
             if isempty(line)
                 if !isempty(depths)
                     haskey(result, segment) && error("Segment $segment present twice in $matpath")
-                    result[segment::Segment] = Thing(depths)
+                    result[segment::Segment] = some(depths)
                     depths = UInt32[]
                 end
                 continue
@@ -189,17 +190,19 @@ function load_res_file(resfilename::AbstractString)::Dict{Segment, Option{Float6
         fields = Vector{SubString{String}}(undef, 11)
         lines = eachline(io)
         header, _ = iterate(lines)::NTuple{2, Any}
-        result = Dict(s => ErrorTypes.None{Float64}() for s in instances(Segment))
+        result = Dict(s => none(Float64) for s in instances(Segment))
         @assert header == "#Template\tScore\tExpected\tTemplate_length\tTemplate_Identity\tTemplate_Coverage\tQuery_Identity\tQuery_Coverage\tDepth\tq_value\tp_value"
         for fields in (lines |> imap(strip) |> ifilter(!isempty) |> imap(x -> split!(fields, x, UInt8('\t'))))
             segment = Segment(strip(last(rsplit(first(fields), '_', limit=2))))
-            is_none(result[segment]) || error("Segment $(string(segment)) present twice in file $resfilename")
-            result[segment] = Thing(parse(Float64, fields[5]) / 100)
+            is_error(result[segment]) || error("Segment $(string(segment)) present twice in file $resfilename")
+            result[segment] = some(parse(Float64, fields[5]) / 100)
         end
         result
     end
 end
 
+"Given a set of (segment, accession), fetches References for each. A Reference is the sequence
+and its Proteins"
 function load_references(references::Set{Tuple{Segment, String}}, refdir::AbstractString
 )::Dict{Tuple{Segment, String}, Reference}
     # Group segments
@@ -271,13 +274,16 @@ function push_codon(x::DNACodon, nt::DNA)
     reinterpret(DNACodon, ifelse(val === 0xff, zero(UInt), enc))
 end
 
-"Given an aln b/w ref and whole segment, return (seqnucs, refnucs, pos_in_seg)"
+"Given an aln b/w ref and whole segment, return (seqnucs, refnucs, pos_in_seg, maybe_expected_stop)"
 function gather_aln(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNASeq})
     seg_nucs, ref_nucs, seg_positions = DNA[], DNA[], UInt16[]
     seg_pos = ref_pos = num_seg_nt = zero(UInt16)
     last_ref_pos = findlast(protein.mask)
     codon = mer"AAA"
-    expected_stop = ErrorTypes.None{Int}()
+
+    # We can only compute expected_stop - the stop position in the segment, if the
+    # segment doesn't have a stop codon before we reach the stop pos of reference seq.
+    expected_stop = none(Int)
     for (seg_nt, ref_nt) in aln
         seg_pos += (seg_nt !== DNA_Gap)
         ref_pos += (ref_nt !== DNA_Gap)
@@ -292,7 +298,7 @@ function gather_aln(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNA
         end
 
         if ref_pos == last_ref_pos
-            expected_stop = Thing(seg_pos % Int)
+            expected_stop = some(seg_pos % Int)
         end
 
         push!(seg_nucs, seg_nt)
@@ -305,9 +311,10 @@ function gather_aln(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNA
     return LongDNASeq(seg_nucs), LongDNASeq(ref_nucs), seg_positions, expected_stop
 end
 
+"Return a vector of errors and indel_errors, by checking the integrity of the ORFs."
 function protein_errors(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNASeq}
 )::Tuple{Vector{ErrorMessage}, Vector{ErrorMessage}}
-    seg_nucs, ref_nucs, seg_positions, expected_stop = gather_aln(protein, aln)
+    seg_nucs, ref_nucs, seg_positions, maybe_expected_stop = gather_aln(protein, aln)
     errors, indel_messages = ErrorMessage[], ErrorMessage[]
     n_del = n_ins = 0
     for (seg_nt, ref_nt, pos) in zip(seg_nucs, ref_nucs, seg_positions)
@@ -355,15 +362,15 @@ function protein_errors(protein::Protein, aln::PairwiseAlignment{LongDNASeq, Lon
     end
 
     # Does it have a stop codon too early or too late?
-    if is_none(expected_stop)
+    if is_error(maybe_expected_stop)
         push!(errors, ErrorMessage(is_critical(protein.var),
         "$(protein.var) has an early stop at pos $(last(seg_positions))."))
     else
-        exp_stop = unwrap(expected_stop)
-        if exp_stop != last(seg_positions)
-            @assert last(seg_positions) > exp_stop
+        expected_stop = unwrap(maybe_expected_stop)
+        if expected_stop != last(seg_positions)
+            @assert last(seg_positions) > expected_stop
             push!(errors, ErrorMessage(false,
-            "$(protein.var) stops late, at pos $(last(seg_positions)), expected pos $(exp_stop)."))
+            "$(protein.var) stops late, at pos $(last(seg_positions)), expected pos $(expected_stop)."))
         end
     end
     
@@ -402,7 +409,7 @@ end
 function load_assembly(assemblypath::AbstractString)::Dict{Segment, Option{Assembly}}
     open(FASTA.Reader, assemblypath) do reader
         result = Dict{Segment, Option{Assembly}}()
-        map(reader) do record
+        foreach(reader) do record
             id = FASTA.identifier(record)::String
             v = rsplit(id, '_', limit=2)
             length(v) == 2 || error("Found header \"$(id)\", expected pattern \"HEADER_SEGMENT\"")
@@ -412,7 +419,7 @@ function load_assembly(assemblypath::AbstractString)::Dict{Segment, Option{Assem
             @assert length(record.sequence) == length(seq)
             insignificant = BitVector([in(i, UInt8('a'):UInt8('z')) for i in @view record.data[record.sequence]])
             haskey(result, segment) && error("Segment $segment present twice in $assemblypath")
-            result[segment] = Thing(Assembly(insignificant, seq, accession))
+            result[segment] = some(Assembly(insignificant, seq, accession))
         end
         for segment in instances(Segment)
             haskey(result, segment) || (result[segment] = none)
@@ -433,7 +440,7 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     beginning = '\t' * rpad(string(segment) * ":", 4)
 
     # Check presence of segment
-    if is_none(maybe_data)
+    if is_error(maybe_data)
         push!(lines, beginning * "\n\t\tERROR: Missing segment")
         return nothing
     end
@@ -500,6 +507,7 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     lines
 end
 
+# This function is thread-unsafe, and must be called in serial.
 function plot_depths(path::AbstractString, data_vec::Vector{Tuple{Segment, Option{SegmentData}}})
     plt = plot(ylabel="Log10 depths", xticks=nothing, ylim=(-0.1, 5))
     for (segment, maybe_data) in data_vec
@@ -511,6 +519,7 @@ function plot_depths(path::AbstractString, data_vec::Vector{Tuple{Segment, Optio
     savefig(plt, path)
 end
 
+"Load all input files, consolidating it to SegmentData objects"
 function load_all_data(basenames::Vector{String}, alnpath::AbstractString,
     assemblyfilename::AbstractString,  resfilename::AbstractString,
     matfilename::AbstractString, refdir::AbstractString
@@ -538,7 +547,7 @@ function load_all_data(basenames::Vector{String}, alnpath::AbstractString,
         load_references(accessions, refdir)
     end
 
-    # Now merge it
+    # Now merge the sources of data
     data_vec = Vector{Any}(nothing, length(basenames))
     Threads.@threads for i in eachindex(depths)
         data_vec[i] = merge_data_sources(assemblies[i], depths[i], references, identities[i])

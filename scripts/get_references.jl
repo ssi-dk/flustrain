@@ -37,7 +37,7 @@ function parse_name(s::Union{String, SubString})::Option{String}
         SubString(rest2, 1:ncodeunits(rest2) - ncodeunits(m.match))
     end
     
-    return Thing(String(rest3))
+    return some(String(rest3))
 end
 
 function clean_data(io::IO, out::IO)
@@ -65,7 +65,7 @@ function clean_data(io::IO, out::IO)
 
         # Filter name
         nn = parse_name(name)
-        name = if is_none(nn)
+        name = if is_error(nn)
             ""
         else
             unwrap(nn)
@@ -107,13 +107,13 @@ function parse_from_integer(::Type{Segment}, s::AbstractString)::Option{Segment}
     y = tryparse(UInt8, s)
     y === nothing && return none
     (iszero(y) | (y > 0x08)) && return none
-    Thing(reinterpret(Segment, y - 0x01))
+    some(reinterpret(Segment, y - 0x01))
 end
 
 function parse_from_name(::Type{Segment}, s::AbstractString)::Option{Segment}
     y = get(SEGMENT_STR_DICT, s, nothing)
     y === nothing && return none
-    Thing(y)
+    some(y)
 end
 
 @enum ProteinVariant::UInt8 begin
@@ -180,7 +180,7 @@ end
 function infer_proteinvariant(segment::Segment, orflen::Integer)::Option{ProteinVariant}
     for var in variants(segment)
         if orflen in orf_len_range(var)
-            return Thing(var)
+            return some(var)
         end
     end
     return none
@@ -198,11 +198,11 @@ function parse_range(s::AbstractString)::Option{UnitRange{UInt16}}
     # If it's not a range, it must be a single number
     if p2 === nothing
         n = parse(UInt16, s)
-        Thing(n:n)
+        some(n:n)
     else
         start = parse(UInt16, @view s[1:p2-1])
         stop = parse(UInt16, s[p2+1:ncodeunits(s)])
-        Thing(start:stop)
+        some(start:stop)
     end
 end
 
@@ -233,7 +233,7 @@ function parse_orf(s::AbstractString, segment::Segment,
     # Return none if it's not divisible by three and thus cant be ORF
     iszero(len % 3) || return none
     var = @? infer_proteinvariant(segment, len)
-    Thing(Protein(var, range))
+    some(Protein(var, range))
 end
 
 # First col is the segment accession, fields 3, 5, 7 etc. are protein ORFS
@@ -244,7 +244,7 @@ function load_orf_line(v::Vector{Protein}, line::AbstractString, segment::Segmen
     for orf_field in fields[3:2:end]
         push!(v, @?(parse_orf(orf_field, segment)))
     end
-    return Thing(String(first(fields)))
+    return some(String(first(fields)))
 end
 
 function load_orf_data(io::IO, segmentof::Dict{String, Segment})
@@ -255,7 +255,7 @@ function load_orf_data(io::IO, segmentof::Dict{String, Segment})
         segment = get(segmentof, id, nothing)
         segment === nothing && continue
         maybe_key = load_orf_line(v, line, segment)
-        is_none(maybe_key) && continue
+        is_error(maybe_key) && continue
         haskey(orfs, unwrap(maybe_key)) && error("Duplicate key $(unwrap(maybe_key))!")
         orfs[unwrap(maybe_key)] = length(v) == 2 ? Tuple(v) : (first(v),)
     end
@@ -289,14 +289,14 @@ function parse_subtype(s::Union{String, SubString})::Option{SubType}
     isempty(s) && return none
     m = match(r"^H(\d+)N(\d+)$", s)
     m === nothing && error("UNKNOWN SUBTYPE: $s")
-    Thing(SubType(parse(UInt8, m[1]), parse(UInt8, m[2])))
+    some(SubType(parse(UInt8, m[1]), parse(UInt8, m[2])))
 end
 
 function parse_year(s::Union{String, SubString})::Option{Int}
     isempty(s) && return none
     pos_slash_found = findfirst(isequal('/'), s)
     last_byte = pos_slash_found === nothing ? ncodeunits(s) : pos_slash_found - 1
-    return Thing(parse(Int, SubString(s, 1:last_byte)))
+    return some(parse(Int, SubString(s, 1:last_byte)))
 end
 
 struct FluMeta
@@ -319,7 +319,7 @@ function parse_flumeta(s::Union{String, SubString})::Option{FluMeta}
     segment = @? parse_from_integer(Segment, fields[3])
     len = parse(Int, fields[7])
 
-    return Thing(FluMeta(gi, host, segment, subtype, year, len, name))
+    return some(FluMeta(gi, host, segment, subtype, year, len, name))
 end
 
 parse_all(io::IO) = parse_all(eachline(io) |> Map(strip) |> Filter(!isempty))
@@ -328,7 +328,7 @@ function parse_all(lines)
     metas = FluMeta[]
     for (i, line) in enumerate(lines)
         opt = parse_flumeta(line)
-        is_none(opt) || push!(metas, unwrap(opt))
+        is_error(opt) || push!(metas, unwrap(opt))
     end
     metas
 end
