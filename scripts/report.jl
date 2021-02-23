@@ -1,5 +1,7 @@
 # TODO: Check for extra nt at ends, by aligning to a selection of conserved ends
 
+module t
+
 using FASTX
 using BioSequences
 using BioAlignments
@@ -45,6 +47,7 @@ const _CRITICAL = Bool[1,1,0,1,0,1,1,1,1,1,1,1]
 is_critical(x::ProteinVariant) = @inbounds _CRITICAL[reinterpret(UInt8, x) + 0x01]
 
 const ALN_MODEL = AffineGapScoreModel(EDNAFULL, gap_open=-25, gap_extend=-2)
+const AA_ALN_MODEL = AffineGapScoreModel(BLOSUM62, gap_open=-10, gap_extend=-2)
 
 # Data retrieved from the .mat.gz file
 struct Depths
@@ -70,6 +73,21 @@ struct Assembly
     accession::String
 end
 
+struct ErrorMessage
+    critical::Bool
+    msg::String
+end
+
+struct ORFData
+    variant::ProteinVariant
+    seq::LongDNASeq
+    aaseq::LongAminoAcidSeq
+    identity::Float64
+    errors::Vector{ErrorMessage}
+    # indel errors are special because if there are 50 of them, we don't display them all
+    indel_errors::Vector{ErrorMessage}
+end
+
 # Synthesized from all of the above. Its construction should verify that they are
 # consistent with each other (which is distinct from them being internally consistent)
 struct SegmentData
@@ -79,12 +97,7 @@ struct SegmentData
     seq::LongDNASeq
     refseq::LongDNASeq
     aln::PairwiseAlignment{LongDNASeq, LongDNASeq}
-    proteins::Vector{Protein}
-end
-
-struct ErrorMessage
-    critical::Bool
-    msg::String
+    orfdata::Vector{ORFData}
 end
 
 "Create SegmentData from all data sources below"
@@ -108,7 +121,10 @@ function merge_data_sources(assemblies::Dict{Segment, Option{Assembly}},
         asm_id = unwrap(asm_identities[segment])
         (seq, ref) = (assembly.seq, reference.seq)
         aln = pairalign(OverlapAlignment(), seq, ref, ALN_MODEL).aln
-        smt = SegmentData(depth, asm_id, assembly.insignificant, seq, ref, aln, reference.proteins)
+        orfdata = map(reference.proteins) do protein
+            ORFData(protein, aln, reference)
+        end
+        smt = SegmentData(depth, asm_id, assembly.insignificant, seq, ref, aln, orfdata)
         push!(result, (segment, some(smt)))
     end
     sort!(result, by=first)
@@ -222,7 +238,7 @@ function load_references(references::Set{Tuple{Segment, String}}, refdir::Abstra
         open(FASTA.Reader, seqpath) do reader
             while !eof(reader)
                 read!(reader, record)
-                accession = FASTA.identifier(record)
+                accession = FASTA.identifier(record)::String
                 if in(accession, accessions)
                     seqof[accession] = FASTA.sequence(LongDNASeq, record)
                 end
@@ -274,16 +290,15 @@ function push_codon(x::DNACodon, nt::DNA)
     reinterpret(DNACodon, ifelse(val === 0xff, zero(UInt), enc))
 end
 
-"Given an aln b/w ref and whole segment, return (seqnucs, refnucs, pos_in_seg, maybe_expected_stop)"
+# A function to get the Assembly and the Reference
 function gather_aln(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNASeq})
-    seg_nucs, ref_nucs, seg_positions = DNA[], DNA[], UInt16[]
-    seg_pos = ref_pos = num_seg_nt = zero(UInt16)
+    nucleotides = DNA[]
     last_ref_pos = findlast(protein.mask)
-    codon = mer"AAA"
-
-    # We can only compute expected_stop - the stop position in the segment, if the
-    # segment doesn't have a stop codon before we reach the stop pos of reference seq.
-    expected_stop = none(Int)
+    codon = mer"AAA" # arbitrary starting codon
+    seg_pos = ref_pos = n_deletions = n_insertions = 0
+    maybe_expected_stop = none(Int)
+    # indel messages are special because we choose to skip if there are too many
+    messages, indel_messages = ErrorMessage[], ErrorMessage[]
     for (seg_nt, ref_nt) in aln
         seg_pos += (seg_nt !== DNA_Gap)
         ref_pos += (ref_nt !== DNA_Gap)
@@ -292,96 +307,97 @@ function gather_aln(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNA
         # If we're in an intron, don't do anything
         !is_coding & (ref_pos < last_ref_pos) && continue
 
-        if seg_nt !== DNA_Gap
-            num_seg_nt += UInt16(1)
+        # Check for deletions
+        if seg_nt == DNA_Gap
+            n_deletions += 1
+        else
             codon = push_codon(codon, seg_nt)
+            push!(nucleotides, seg_nt)
+            if !iszero(n_deletions)
+                if !iszero(n_deletions % 3)
+                    push!(indel_messages, ErrorMessage(is_critical(protein.var),
+                        "$(protein.var) frameshift deletion of $n_deletions bases b/w bases $(seg_pos-1)-$(seg_pos)"))
+                else
+                    push!(indel_messages, ErrorMessage(false,
+                        "$(protein.var) deletion of $n_deletions bases b/w bases $(seg_pos-1)-$(seg_pos)"))
+                end
+                n_deletions = 0
+            end
+        end
+
+        # Check for insertions
+        if ref_nt == DNA_Gap
+            n_insertions += 1
+        else
+            if !iszero(n_insertions)
+                if !iszero(n_insertions % 3)
+                    push!(indel_messages, ErrorMessage(is_critical(protein.var),
+                        "$(protein.var) frameshift insertion of bases $(seg_pos-n_insertions)-$(seg_pos-1)"))
+                else
+                    push!(indel_messages, ErrorMessage(false,
+                    "$(protein.var)  insertion of bases $(seg_pos-n_insertions)-$(seg_pos-1)"))
+                end
+                n_insertions = 0
+            end
         end
 
         if ref_pos == last_ref_pos
-            expected_stop = some(seg_pos % Int)
+            maybe_expected_stop = some(seg_pos % Int)
         end
-
-        push!(seg_nucs, seg_nt)
-        push!(ref_nucs, ref_nt)
-        push!(seg_positions, seg_pos)
 
         # Only stop if we find a stop codon NOT in an intron
-        iszero(num_seg_nt % 3) & is_stop(codon) && break
+        if is_stop(codon) && iszero(length(nucleotides) % 3)
+            if is_error(maybe_expected_stop)
+                push!(messages, ErrorMessage(is_critical(protein.var),
+                "$(protein.var) has an early stop at segment pos $seg_pos, after $(length(nucleotides)) nt."))
+            else
+                expected_stop = unwrap(maybe_expected_stop)
+                if expected_stop != seg_pos
+                    @assert seg_pos > expected_stop
+                    push!(messages, ErrorMessage(false,
+                    "$(protein.var) stops late, at pos $seg_pos, expected pos $expected_stop."))
+                end
+            end
+            break
+        end
     end
-    return LongDNASeq(seg_nucs), LongDNASeq(ref_nucs), seg_positions, expected_stop
+
+    dnaseq = LongDNASeq(nucleotides)
+    # Is seq length divisible by three?
+    remnant = length(dnaseq) % 3
+    if !iszero(remnant)
+        push!(messages, ErrorMessage(is_critical(variant),
+            "$(variant) length is $(length(dnaseq)) nt, not divisible by 3, last nt trimmed off"))
+    end
+
+    # Does it end with a stop? If so, remove it, else report error
+    dnaseq = iszero(remnant) ? dnaseq : dnaseq[1:end-remnant]
+    if isempty(dnaseq) || !is_stop(DNACodon(dnaseq[end-2:end]))
+        push!(messages, ErrorMessage(is_critical(variant),
+            "$(variant) does not end with a stop codon."))
+    else
+        dnaseq = dnaseq[1:end-3]
+    end
+
+    return dnaseq, messages, indel_messages
 end
 
-"Return a vector of errors and indel_errors, by checking the integrity of the ORFs."
-function protein_errors(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNASeq}
-)::Tuple{Vector{ErrorMessage}, Vector{ErrorMessage}}
-    seg_nucs, ref_nucs, seg_positions, maybe_expected_stop = gather_aln(protein, aln)
-    errors, indel_messages = ErrorMessage[], ErrorMessage[]
-    n_del = n_ins = 0
-    for (seg_nt, ref_nt, pos) in zip(seg_nucs, ref_nucs, seg_positions)
-        if seg_nt == DNA_Gap
-            n_del += 1
-        elseif !iszero(n_del)
-            if !iszero(n_del % 3)
-                push!(indel_messages, ErrorMessage(is_critical(protein.var),
-                    "$(protein.var) frameshift deletion of $n_del bases b/w bases $(pos-1)-$(pos)"))
-            else
-                push!(indel_messages, ErrorMessage(false,
-                    "$(protein.var) deletion of $n_del bases b/w bases $(pos-1)-$(pos)"))
-            end
-            n_del = 0
-        end
-
-        if ref_nt == DNA_Gap
-            n_ins += 1
-        elseif !iszero(n_ins)
-            if !iszero(n_ins % 3)
-                push!(indel_messages, ErrorMessage(is_critical(protein.var),
-                    "$(protein.var) frameshift insertion of bases $(pos-n_ins)-$(pos-1)"))
-            else
-                push!(indel_messages, ErrorMessage(false,
-                    "$(protein.var)  insertion of bases $(pos-n_ins)-$(pos-1)"))
-            end
-            n_ins = 0
-        end
-    end
-    seq = ungap(seg_nucs)
-    
-    # Is seq length divisible by three?
-    remnant = length(seq) % 3
-    if !iszero(remnant)
-        push!(errors, ErrorMessage(is_critical(protein.var),
-            "$(protein.var) length is $(length(seq)) nt, not divisible by 3"))
-    end
-
-    # Does it not end with a stop codon?
-    aaseq = BioSequences.translate(iszero(remnant) ? seq : seq[1:end-remnant])
-    stoppos = findfirst(AA_Term, aaseq)
-    if stoppos === nothing
-        push!(errors, ErrorMessage(is_critical(protein.var),
-            "$(protein.var) does not have a stop codon."))
-    end
-
-    # Does it have a stop codon too early or too late?
-    if is_error(maybe_expected_stop)
-        push!(errors, ErrorMessage(is_critical(protein.var),
-        "$(protein.var) has an early stop at pos $(last(seg_positions))."))
-    else
-        expected_stop = unwrap(maybe_expected_stop)
-        if expected_stop != last(seg_positions)
-            @assert last(seg_positions) > expected_stop
-            push!(errors, ErrorMessage(false,
-            "$(protein.var) stops late, at pos $(last(seg_positions)), expected pos $(expected_stop)."))
-        end
-    end
-    
-    sort!(errors, rev=true, by=x -> x.critical)
-    sort!(indel_messages, rev=true, by=x -> x.critical)
-    return (errors, indel_messages)
+function ORFData(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNASeq},
+    ref::Reference)
+    orfseq, messages, indel_messages = gather_aln(protein, aln)
+    aaseq = BioSequences.translate(orfseq)
+    ref_aas = (i for (i,n) in zip(ref.seq, protein.mask) if n)
+    # Last 3 nts are the stop codon
+    refaa = BioSequences.translate(LongDNASeq(collect(ref_aas)[1:end-3]))
+    aaaln = pairalign(GlobalAlignment(), aaseq, refaa, AA_ALN_MODEL).aln
+    identity = get_identity(aaaln)
+    ORFData(protein.var, orfseq, aaseq, identity, messages, indel_messages)
 end
 
 # This function gets the identity between a segment and its reference
-function get_identity(aln::PairwiseAlignment{LongDNASeq, LongDNASeq})
-    seq, ref = fill(DNA_Gap, length(aln)), fill(DNA_Gap, length(aln))
+function get_identity(aln::PairwiseAlignment{T, T}) where {T <: BioSequence}
+    gapval = gap(eltype(T))
+    seq, ref = fill(gapval, length(aln)), fill(gapval, length(aln))
     for (i, (seqnt, refnt)) in enumerate(aln)
         seq[i] = seqnt
         ref[i] = refnt
@@ -489,18 +505,16 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
         push!(lines, "\t\t       $amb ambiguous bases in consensus sequence")
     end
 
-    for protein in data.proteins
-        (errors, indel_messages) = protein_errors(protein, data.aln)
-
-        if length(indel_messages) > 4
-            push!(lines, "\t\t" * (is_critical(protein.var) ? "ERROR:" : "      ") *
-            " Numerous indels in $(protein.var)")
+    for orfdata in data.orfdata
+        if length(orfdata.indel_errors) > 4
+            push!(lines, "\t\t" * (is_critical(orfdata.protein.var) ? "ERROR:" : "      ") *
+            " Numerous indels in $(orfdata.protein.var)")
         else
-            for msg in indel_messages
+            for msg in orfdata.indel_errors
                 push_msg(lines, msg, 2)
             end
         end
-        for msg in errors
+        for msg in orfdata.errors
             push_msg(lines, msg, 2)
         end
     end
@@ -576,12 +590,21 @@ function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::Abs
         end
     end
 
-    # Create consensus files
+    # Create consensus files - both DNA and AA
     for (basename, data_vec) in segment_data
         open(FASTA.Writer, joinpath(outdir, basename, "consensus.fna")) do writer
             for (segment, maybe_data) in data_vec
-                data = @unwrap_or maybe_data continue
+                data = (@unwrap_or maybe_data continue)::SegmentData
                 write(writer, FASTA.Record(basename, segment, data.seq, data.insignificant))
+            end
+        end
+
+        open(FASTA.Writer, joinpath(outdir, basename, "consensus.faa")) do writer
+            for (segment, maybe_data) in data_vec
+                data = (@unwrap_or maybe_data continue)::SegmentData
+                for orfdata in data.orfdata
+                    write(writer, FASTA.Record(basename * '_' * string(orfdata.variant), orfdata.aaseq))
+                end
             end
         end
     end
@@ -598,3 +621,5 @@ if abspath(PROGRAM_FILE) == @__FILE__
     end
     main(ARGS...)
 end
+
+end # module
