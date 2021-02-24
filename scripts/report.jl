@@ -24,11 +24,13 @@ ifilter(f) = x -> Iterators.filter(f, x)
 Create a representaiton of one of the eight Influenza A genome segments.
 """
 @enum Segment::UInt8 PB1 PB2 PA HA NP NA MP NS
-const _STR_SEGMENT = instances(Segment) |> imap(s -> string(s)=>s) |> Dict
+const SegmentTuple{T} = NTuple{length(instances(Segment)), T}
+const _STR_SEGMENT = map(string, instances(Segment))
 function Segment(s::AbstractString)
-    smt = get(_STR_SEGMENT, s, nothing)
-    smt === nothing && error("Unknown segment: \"$s\"")
-    smt
+    i = findfirst(isequal(s), _STR_SEGMENT)
+    #smt = get(_STR_SEGMENT, s, nothing)
+    i === nothing && error("Unknown segment: \"$s\"")
+    @inbounds instances(Segment)[i]
 end
 
 @enum ProteinVariant::UInt8 pb2 pb1 pb1fa pa pax ha np na m1 m2 ns1 nep
@@ -82,7 +84,7 @@ struct ORFData
     variant::ProteinVariant
     seq::LongDNASeq
     aaseq::LongAminoAcidSeq
-    identity::Float64
+    identity::Option{Float64}
     errors::Vector{ErrorMessage}
     # indel errors are special because if there are 50 of them, we don't display them all
     indel_errors::Vector{ErrorMessage}
@@ -101,24 +103,24 @@ struct SegmentData
 end
 
 "Create SegmentData from all data sources below"
-function merge_data_sources(assemblies::Dict{Segment, Option{Assembly}},
-    depths::Dict{Segment, Option{Vector{UInt32}}},
+function merge_data_sources(assemblies::SegmentTuple{Option{Assembly}},
+    depths::SegmentTuple{Option{Vector{UInt32}}},
     references::Dict{Tuple{Segment, String}, Reference},
-    asm_identities::Dict{Segment, Option{Float64}}
+    asm_identities::SegmentTuple{Option{Float64}}
 )::Vector{Tuple{Segment, Option{SegmentData}}}
     
     result = Vector{Tuple{Segment, Option{SegmentData}}}()
-    for (segment, maybe_assembly) in assemblies
-        if is_error(maybe_assembly)
+    for (segment_index, segment) in enumerate(instances(Segment))
+        if is_error(assemblies[segment_index])
             push!(result, (segment, none))
             continue
         end
-        depth = expect(depths[segment],
+        depth = expect(depths[segment_index],
             "Segment $segment of basename $basename found in assembly, but not in matrix"
         )
-        assembly = unwrap(maybe_assembly)
+        assembly = unwrap(assemblies[segment_index])
         reference = references[(segment, assembly.accession)]
-        asm_id = unwrap(asm_identities[segment])
+        asm_id = unwrap(asm_identities[segment_index])
         (seq, ref) = (assembly.seq, reference.seq)
         aln = pairalign(OverlapAlignment(), seq, ref, ALN_MODEL).aln
         orfdata = map(reference.proteins) do protein
@@ -158,9 +160,9 @@ function split!(v::Vector{SubString{String}}, s::Union{String, SubString{String}
 end
 
 "Given a path to a .mat.gz file, return a dict of an optional vec of depths"
-function load_depths(matpath::AbstractString)::Dict{Segment, Option{Vector{UInt32}}}
+function load_depths(matpath::AbstractString)::SegmentTuple{Option{Vector{UInt32}}}
     open(matpath) do io
-        result = Dict{Segment, Option{Vector{UInt32}}}()
+        result = fill(none(Vector{UInt32}), length(instances(Segment)))
         segment = nothing
         depths = UInt32[]
         fields = Vector{SubString{String}}(undef, 7)
@@ -168,8 +170,9 @@ function load_depths(matpath::AbstractString)::Dict{Segment, Option{Vector{UInt3
         for line in eachline(GzipDecompressorStream(io)) |> imap(string)
             if isempty(line)
                 if !isempty(depths)
-                    haskey(result, segment) && error("Segment $segment present twice in $matpath")
-                    result[segment::Segment] = some(depths)
+                    segment_index = reinterpret(UInt8, segment::Segment) + 0x01
+                    is_error(result[segment_index]) || error("Segment $segment present twice in $matpath")
+                    result[segment_index] = some(depths)
                     depths = UInt32[]
                 end
                 continue
@@ -192,28 +195,26 @@ function load_depths(matpath::AbstractString)::Dict{Segment, Option{Vector{UInt3
             depth = total_depth - linedepths[5]
             push!(depths, depth)
         end
-        for segment in instances(Segment)
-            haskey(result, segment) || (result[segment] = none)
-        end
-        result
+        SegmentTuple(result)
     end
 end
 
 # Here, we load template identities from kma2.res. If a template has <99.5% identity,
 # it means the first assembly did not converge.
-function load_res_file(resfilename::AbstractString)::Dict{Segment, Option{Float64}}
+function load_res_file(resfilename::AbstractString)::SegmentTuple{Option{Float64}}
     open(resfilename) do io
         fields = Vector{SubString{String}}(undef, 11)
         lines = eachline(io)
         header, _ = iterate(lines)::NTuple{2, Any}
-        result = Dict(s => none(Float64) for s in instances(Segment))
+        result = fill(none(Float64), length(instances(Segment)))
         @assert header == "#Template\tScore\tExpected\tTemplate_length\tTemplate_Identity\tTemplate_Coverage\tQuery_Identity\tQuery_Coverage\tDepth\tq_value\tp_value"
         for fields in (lines |> imap(strip) |> ifilter(!isempty) |> imap(x -> split!(fields, x, UInt8('\t'))))
             segment = Segment(strip(last(rsplit(first(fields), '_', limit=2))))
-            is_error(result[segment]) || error("Segment $(string(segment)) present twice in file $resfilename")
-            result[segment] = some(parse(Float64, fields[5]) / 100)
+            segment_index = reinterpret(UInt8, segment) + 0x01
+            is_error(result[segment_index]) || error("Segment $(string(segment)) present twice in file $resfilename")
+            result[segment_index] = some(parse(Float64, fields[5]) / 100)
         end
-        result
+        SegmentTuple(result)
     end
 end
 
@@ -366,15 +367,15 @@ function gather_aln(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNA
     # Is seq length divisible by three?
     remnant = length(dnaseq) % 3
     if !iszero(remnant)
-        push!(messages, ErrorMessage(is_critical(variant),
-            "$(variant) length is $(length(dnaseq)) nt, not divisible by 3, last nt trimmed off"))
+        push!(messages, ErrorMessage(is_critical(protein.var),
+            "$(protein.var) length is $(length(dnaseq)) nt, not divisible by 3, last nt trimmed off"))
     end
 
     # Does it end with a stop? If so, remove it, else report error
     dnaseq = iszero(remnant) ? dnaseq : dnaseq[1:end-remnant]
     if isempty(dnaseq) || !is_stop(DNACodon(dnaseq[end-2:end]))
-        push!(messages, ErrorMessage(is_critical(variant),
-            "$(variant) does not end with a stop codon."))
+        push!(messages, ErrorMessage(is_critical(protein.var),
+            "$(protein.var) does not end with a stop codon."))
     else
         dnaseq = dnaseq[1:end-3]
     end
@@ -395,18 +396,27 @@ function ORFData(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNASeq
 end
 
 # This function gets the identity between a segment and its reference
-function get_identity(aln::PairwiseAlignment{T, T}) where {T <: BioSequence}
+function get_identity(aln::PairwiseAlignment{T, T})::Option{Float64} where {T <: BioSequence}
+    iszero(length(aln)) && return none
+
     gapval = gap(eltype(T))
     seq, ref = fill(gapval, length(aln)), fill(gapval, length(aln))
     for (i, (seqnt, refnt)) in enumerate(aln)
         seq[i] = seqnt
         ref[i] = refnt
     end
+
+    # This can sometimes happen if e.g. there is no called sequence
+    # in the supposed amino acid sequence.
+    (all(isgap, seq) || all(isgap, ref)) && return none
+
     start = max(findfirst(!isgap, seq), findfirst(!isgap, ref))
     stop = min(findlast(!isgap, seq), findlast(!isgap, ref))
     id = count(zip(view(seq, start:stop), view(ref, start:stop))) do pair
         first(pair) === last(pair)
     end / length(start:stop)
+
+    return some(id)
 end
 
 # We only have this to reconstruct the record - including the lowercase letters.
@@ -422,25 +432,23 @@ function FASTA.Record(basename::AbstractString, segment::Segment,
     FASTA.Record(append!(data, seqdata))
 end
 
-function load_assembly(assemblypath::AbstractString)::Dict{Segment, Option{Assembly}}
+function load_assembly(assemblypath::AbstractString)::SegmentTuple{Option{Assembly}}
     open(FASTA.Reader, assemblypath) do reader
-        result = Dict{Segment, Option{Assembly}}()
+        result = fill(none(Assembly), length(instances(Segment)))
         foreach(reader) do record
             id = FASTA.identifier(record)::String
             v = rsplit(id, '_', limit=2)
             length(v) == 2 || error("Found header \"$(id)\", expected pattern \"HEADER_SEGMENT\"")
             accession = first(v)
             segment = Segment(last(v))
+            segment_index = reinterpret(UInt8, segment) + 0x01
             seq = FASTA.sequence(LongDNASeq, record)
             @assert length(record.sequence) == length(seq)
             insignificant = BitVector([in(i, UInt8('a'):UInt8('z')) for i in @view record.data[record.sequence]])
-            haskey(result, segment) && error("Segment $segment present twice in $assemblypath")
-            result[segment] = some(Assembly(insignificant, seq, accession))
+            is_error(result[segment_index]) || error("Segment $segment present twice in $assemblypath")
+            result[segment_index] = some(Assembly(insignificant, seq, accession))
         end
-        for segment in instances(Segment)
-            haskey(result, segment) || (result[segment] = none)
-        end
-        result
+        SegmentTuple(result)
     end
 end
 
@@ -475,12 +483,12 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     identity = get_identity(data.aln)
     depthstr = "depth $(@sprintf "%.2e" mean_depth)"
     covstr = "coverage $(@sprintf "%.3f" coverage)"
-    idstr = "identity $(@sprintf "%.3f" identity)"
+    idstr = is_error(identity) ? "N/A" : "identity $(@sprintf "%.3f" unwrap(identity))"
     push!(lines, beginning * " $depthstr $covstr $idstr")
 
     # Warning if coverage or identity is too low
     coverage < 0.9 && push!(lines, "\t\t ERROR: Coverage is less than 90%")
-    identity < 0.9 && push!(lines, "\t\t ERROR: Identity is less than 90%")
+    is_error(identity) || unwrap(identity) < 0.9 && push!(lines, "\t\t ERROR: Identity is less than 90%")
 
     # Warning if identity b/w first and second assembly too low (asm not converged)
     if data.assembly_identity < 0.995
@@ -507,8 +515,8 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
 
     for orfdata in data.orfdata
         if length(orfdata.indel_errors) > 4
-            push!(lines, "\t\t" * (is_critical(orfdata.protein.var) ? "ERROR:" : "      ") *
-            " Numerous indels in $(orfdata.protein.var)")
+            push!(lines, "\t\t" * (is_critical(orfdata.variant) ? "ERROR:" : "      ") *
+            " Numerous indels in $(orfdata.variant)")
         else
             for msg in orfdata.indel_errors
                 push_msg(lines, msg, 2)
@@ -552,10 +560,10 @@ function load_all_data(basenames::Vector{String}, alnpath::AbstractString,
 
     references::Dict{Tuple{Segment, String}, Reference} = let
         accessions = Set{Tuple{Segment, String}}()
-        for segment_dict in assemblies
-            for (segment, maybe_assembly) in segment_dict
+        for segment_vals in assemblies
+            for (i, maybe_assembly) in enumerate(segment_vals)
                 assembly = @unwrap_or maybe_assembly continue
-                push!(accessions, (segment, assembly.accession))
+                push!(accessions, (Segment(i - 1), assembly.accession))
             end
         end
         load_references(accessions, refdir)
@@ -623,3 +631,4 @@ if abspath(PROGRAM_FILE) == @__FILE__
 end
 
 end # module
+

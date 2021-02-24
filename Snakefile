@@ -222,7 +222,7 @@ rule collect_best_templates:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/gather_spa.jl",
         refpath=REFDIR
-    shell: "{params.juliacmd} {params.scriptpath} aln {params.refpath}"
+    shell: "julia {params.scriptpath} aln {params.refpath}"
 
 rule first_kma_index:
     input: "aln/{basename}/cat.fna"
@@ -323,7 +323,7 @@ checkpoint create_report:
     log: "log/report.txt"
     threads: workflow.cores
     run:
-        shell(f"{params.juliacmd} -t {threads} {params.scriptpath} consensus report.txt "
+        shell(f"julia -t {threads} {params.scriptpath} consensus report.txt "
                "depths aln kma2.fsa kma2.res kma1.mat.gz {params.refdir} > {log}")
 
 ############################
