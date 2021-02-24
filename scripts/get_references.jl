@@ -8,12 +8,36 @@ Accession (string) => Protein
 
 =#
 
+module t
+
 using FASTX
 using BioSequences
 using ErrorTypes
 using Transducers
 using Serialization
 using UnicodePlots
+
+const PATH = "/Users/jakobnissen/Downloads/INFLUENZA"
+
+function main()
+    cd(PATH)
+
+    # Clean the data
+
+    # Parse genomeset to SegmentData with all basic info
+    
+    # Load influenza.fna and update the seq field of the SegmentData
+
+    # Load influenza.dat and update the ORF fields of SegmentData
+
+    # Series of filters on the flumeta
+
+    # Add in the human ones for good measure
+
+    # Serialize to files
+end
+
+###### Step one: Clean the data before actually loading it etc.
 
 format_error(s) =  error("Unknown format: \"$s\"")
 function parse_name(s::Union{String, SubString})::Option{String}
@@ -88,20 +112,9 @@ open("/Users/jakobnissen/Downloads/INFLUENZA/raw/genomeset.dat") do infile
     end
 end
 
-###########################
+########################### Step two: Define basic types
 
-@enum Segment::UInt8 begin
-    PB2
-    PB1
-    PA
-    HA
-    NP
-    NA
-    MP
-    NS
-end
-
-const SEGMENT_STR_DICT = Dict(string(s)=>s for s in instances(Segment))
+@enum Segment::UInt8 PB1 PB2 PA HA NP NA MP NS
 
 function parse_from_integer(::Type{Segment}, s::AbstractString)::Option{Segment}
     y = tryparse(UInt8, s)
@@ -110,6 +123,7 @@ function parse_from_integer(::Type{Segment}, s::AbstractString)::Option{Segment}
     some(reinterpret(Segment, y - 0x01))
 end
 
+const SEGMENT_STR_DICT = Dict(string(s)=>s for s in instances(Segment))
 function parse_from_name(::Type{Segment}, s::AbstractString)::Option{Segment}
     y = get(SEGMENT_STR_DICT, s, nothing)
     y === nothing && return none
@@ -119,96 +133,59 @@ end
 @enum ProteinVariant::UInt8 begin
     pb2
     pb1
-    pb1fa
+    n40 # very rarely seen
+    pb1f2 # inf A only
     pa
-    pax
+    pax # inf A only
     ha
     np
     na
+    nb # inf B only
     m1
-    m2
+    m2 # inf A only
+    bm2 # inf B only
     ns1
     nep
 end
 
-# Approx +/- 100 bp for each ORF. For detecting which ORF is which
-const ORF_LEN_RANGE = UnitRange{UInt16}[
-    2100:2325,
-    2100:2325,
-    6:1000,
-    2050:2300,
-    600:800,
-    1600:1800,
-    1400:1600,
-    1300:1500,
-    650:850,
-    200:400,
-    550:750,
-    250:450
-]
-
-orf_len_range(v::ProteinVariant) = @inbounds ORF_LEN_RANGE[reinterpret(UInt8, v) + 0x01]
-
-const VARIANTS = [
-    [pb2],
-    [pb1, pb1fa],
-    [pa, pax],
-    [ha],
-    [np],
-    [na],
-    [m1, m2],
-    [ns1, nep]
-]
-
-variants(s::Segment) = @inbounds VARIANTS[reinterpret(UInt8, s) + 0x01]
-
-# No known influenza proteins has more than two ORFs
+#=
 struct Protein
     variant::ProteinVariant
-    orfs::Union{Tuple{UnitRange{UInt16}}, NTuple{2, UnitRange{UInt16}}}
+    orfs::Vector{UnitRange{UInt16}}
 end
 
 # No infleunza segment has more than two known proteins
 struct Accession
     name::String
     segment::Segment
-    proteins::Union{Tuple{Protein}, NTuple{2, Protein}}
+    proteins::Vector{Protein}
 end
+=#
 
-#########################################################
-"detects the ProteinVariant based on length of ORF"
-function infer_proteinvariant(segment::Segment, orflen::Integer)::Option{ProteinVariant}
-    for var in variants(segment)
-        if orflen in orf_len_range(var)
-            return some(var)
-        end
-    end
-    return none
-end
+############ Step three: Load in main stuff
 
-#########################################################
+
 
 #### LOAD IN ORF DATA from "influenza.dat"
 # Looks like one of these lines:
 # (gb|AB000613:4-731, 960)
 # gb|AB000721:710-1129
 # gb|AB266385:<1-755
-function parse_range(s::AbstractString)::Option{UnitRange{UInt16}}
+function parse_range(s::AbstractString)::UnitRange{UInt16}
     p2 = findfirst(isequal('-'), s)
     # If it's not a range, it must be a single number
     if p2 === nothing
         n = parse(UInt16, s)
-        some(n:n)
+        n:n
     else
         start = parse(UInt16, @view s[1:p2-1])
         stop = parse(UInt16, s[p2+1:ncodeunits(s)])
-        some(start:stop)
+        start:stop
     end
 end
 
 # This returns the ORFS. When checking length, we can verify which of the ORFS it is.
-function parse_orf(s::AbstractString, segment::Segment,
-)::Option{Protein}
+function parse_orf(s::AbstractString, segment::Segment)::Option{Protein}
     # If it looks like gb|AB266090:<411->632, the ORF is not present
     # in the reference, and we skip it
     if occursin('>', s) || occursin('<', s)
@@ -223,11 +200,11 @@ function parse_orf(s::AbstractString, segment::Segment,
     (range, len) = if occursin(',', s2)
         orfstrings = split(s2, ", ")
         length(orfstrings) == 2 || return none
-        r1 = @? parse_range(orfstrings[1]) 
-        r2 = @? parse_range(orfstrings[2])
+        r1 = parse_range(orfstrings[1]) 
+        r2 = parse_range(orfstrings[2])
         (r1, r2), (length(r1) + length(r2))
     else
-        r1 = @? parse_range(s2)
+        r1 = parse_range(s2)
         (r1,), length(r1)
     end
     # Return none if it's not divisible by three and thus cant be ORF
@@ -514,3 +491,5 @@ for species in [avian, swine]
         force=true)
     end
 end
+
+end # module
