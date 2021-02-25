@@ -8,6 +8,8 @@ TODO:
 * Filter for empty ORF list
 =#
 
+const PATH_TO_HUMAN_REF = "../ref/human"
+
 using Pkg
 Pkg.activate(".")
 #Pkg.instantiate()
@@ -50,10 +52,17 @@ function main()
         add_orfs!(segment_data, accession_protein_map, GzipDecompressorStream(io))
     end
 
+    # We remove the human sequences, because we want to add in a set of manually
+    # curated human sequences
+    filter!(pair -> last(pair).host != human, segment_data)
+
+    # Add in the human ones - these are annotated by The NCBI Influenza Virus Sequence Annotation Tool
+    open("annotation.tbl.gz") do io
+        add_human_sequences!(segment_data, GzipDecompressorStream(io), PATH_TO_HUMAN_REF)
+    end
+
     # Series of filters on the SegmentData
     filter_segment_data!(segment_data)
-
-    # Add in the human ones - these are more-or-less manually annotated for good measure
 
     # Serialize to files
 end
@@ -179,9 +188,13 @@ end
 struct SubType
     H::UInt8
     N::UInt8
+    B::UInt8 # 0 for inf A, 1 for victoria, 2 for yamagata
 end
 
-Base.show(io::IO, s::SubType) = print(io, 'H', s.H, 'N', s.N)
+function Base.show(io::IO, s::SubType)
+    iszero(s.B) && return print(io, 'H', s.H, 'N', s.N)
+    print(io, s.B === 0x01 ? "Victoria" : "Yamagata")
+end
 
 @enum FluSpecies::UInt8 InfluenzaA InfluenzaB
 
@@ -223,6 +236,7 @@ const _STR_PROTEINVARIANT = Dict(
     "M42" => m42,
     "NS1" => ns1,
     "NS2" => nep,
+    "NEP" => nep, # yeah, it has two names
     "NS3" => ns3,
 )
 
@@ -238,46 +252,47 @@ struct Protein
 end
 
 struct SegmentData
-    gi::String
+    gi::Option{String} # missing in human samples
     host::Species
     fluspecies::FluSpecies
     segment::Segment
     subtype::SubType
     year::Int
-    len::Int
     name::String
     proteins::Vector{Protein}
     seq::RefValue{Option{LongDNASeq}}
 end
 
-function parse_subtype(s::Union{String, SubString})::Option{SubType}
+function Base.parse(::Type{SubType}, s::Union{String, SubString})::Option{SubType}
     isempty(s) && return none
+    s == "Victoria" && return some(SubType(0x00, 0x00, 0x01))
+    s == "Yamagata" && return some(SubType(0x00, 0x00, 0x02))
     m = match(r"^H(\d+)N(\d+)$", s)
     m === nothing && error("UNKNOWN SUBTYPE: $s")
-    some(SubType(parse(UInt8, m[1]), parse(UInt8, m[2])))
+    some(SubType(parse(UInt8, m[1]), parse(UInt8, m[2]), 0x00))
 end
 
 function parse_cleaned_genomeset(io::IO)::Dict{String, SegmentData}
     result = Dict{String, SegmentData}()
     for line in eachline(io) |> Map(strip) ⨟ Filter(!isempty)
         data = @unwrap_or parse(SegmentData, line) continue
-        @assert !haskey(result, data.gi) "GB identifier $(data.gi) not unique"
-        result[data.gi] = data
+        gi = unwrap(data.gi)
+        @assert !haskey(result, gi) "GB identifier $(gi) not unique"
+        result[gi] = data
     end
     result
 end
 
 function Base.parse(::Type{SegmentData}, line::Union{String, SubString{String}})::Option{SegmentData}
     fields = split(line, '\t')
-    subtype = @? parse_subtype(fields[4])
+    subtype = @? parse(SubType, fields[4])
     year = @? parse_year(fields[6])
     host = Species(fields[2])
     fluspecies = @? parse_fluspecies(fields[8])
     gi = String(fields[1])
     name = String(fields[8])
     segment = @? parse_from_integer(Segment, fields[3])
-    len = parse(Int, fields[7])
-    some(SegmentData(gi, host, fluspecies, segment, subtype, year, len, name, Protein[], Ref(none(LongDNASeq))))
+    some(SegmentData(some(gi), host, fluspecies, segment, subtype, year, name, Protein[], Ref(none(LongDNASeq))))
 end
 
 function parse_year(s::Union{String, SubString})::Option{Int}
@@ -399,6 +414,7 @@ end
 
 function filter_segment_data!(segment_data::Dict{String, SegmentData})
     len = length(segment_data)
+    n_human = count(v -> v.host == human, values(segment_data))
 
     # Must have a nucleotide sequence
     filter!(segment_data) do (name, data)
@@ -422,6 +438,7 @@ function filter_segment_data!(segment_data::Dict{String, SegmentData})
     len = length(segment_data)
 
     # Filter for outliers of lengths
+    @warn "Not filtering influenza B for segment lengths"
     filter!(segment_data) do (name, data)
         has_acceptable_seq_length(data)
     end
@@ -434,6 +451,8 @@ function filter_segment_data!(segment_data::Dict{String, SegmentData})
     end
     println("Removed $(len - length(segment_data)) sequences")
     len = length(segment_data)
+
+    @assert n_human == count(v -> v.host == human, values(segment_data))
     
     return segment_data
 end
@@ -469,6 +488,8 @@ const ACCEPTABLE_SEGMENT_LENGTHS = Dict(
 )
 
 function has_acceptable_seq_length(data::SegmentData)::Bool
+    # The sizes for influenza B are a little different.
+    data.fluspecies == InfluenzaB && return true
     length(unwrap(data.seq[])) in ACCEPTABLE_SEGMENT_LENGTHS[data.segment]
 end
 
@@ -488,6 +509,79 @@ function is_all_translatable(data::SegmentData)::Bool
         stop_pos == lastindex(aa_sequence) || return false
     end
     return true
+end
+
+function add_human_sequences!(segment_data::Dict{String, SegmentData}, io::IO, dir::String)
+    # First, get a dict of header => seq
+    seq_by_header = Dict{String, LongDNASeq}()
+    for file in readdir(dir)
+        open(FASTA.Reader, joinpath(dir, file)) do reader
+            for record in reader
+                seq_by_header[FASTA.header(record)] = FASTA.sequence(LongDNASeq, record)
+            end
+        end
+    end
+
+    chunks = partition_chunks(io)
+    for chunk in chunks
+        data = parse_annot_segment_data(chunk)
+        @assert !haskey(segment_data, data.name)
+        data.seq[] = some(seq_by_header[data.name])
+        segment_data[data.name] = data
+    end
+
+    segment_data
+end
+
+# Please have a look at the files in annotation.tbl to understand this
+function partition_chunks(io::IO)::Vector{Vector{String}}
+    lines = collect(eachline(io))
+    chunks = Vector{Vector{String}}()
+    chunk = String[]
+    for line in lines
+        if startswith(line, "=========")
+            push!(chunks, copy(chunk))
+            empty!(chunk)
+        else
+            push!(chunk, line)
+        end
+    end
+    push!(chunks, chunk)
+end
+
+function parse_annot_segment_data(chunk::Vector{String})::SegmentData
+    @assert startswith(first(chunk), ">Feature ")
+    header = first(chunk)[10:end]
+    headerfields = split(header, '|')
+    species = if startswith(first(headerfields), "A/")
+        InfluenzaA
+    elseif startswith(first(headerfields), "B/")
+        InfluenzaB
+    else
+        error(first(headerfields))
+    end
+    subtype = unwrap(parse(SubType, headerfields[2]))
+    year = parse(Int, last(split(first(headerfields), '/')))
+    segment = expect(parse_from_name(Segment, headerfields[3]), "Error on chunk $header")
+    proteins = Protein[]
+    orfs = UnitRange{UInt16}[]
+    reading_cds = false
+    for line in @view chunk[2:end]
+        fields = split(line)
+        if isnumeric(line[1]) && length(fields) > 2 && fields[3] == "CDS"
+            reading_cds = true
+        end
+        if isnumeric(line[1]) && reading_cds
+            push!(orfs, parse(UInt16, fields[1]) : parse(UInt16, fields[2]))
+        end
+        if reading_cds && fields[1] == "gene"
+            variant = expect(parse(ProteinVariant, fields[2]), "Error on chunk $header")
+            reading_cds = false
+            push!(proteins, Protein(variant, copy(orfs)))
+            empty!(orfs)
+        end
+    end
+    SegmentData(none(String), human, species, segment, subtype, year, header, proteins, Ref(none(LongDNASeq)))
 end
 
 isinteractive() || main()
