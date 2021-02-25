@@ -1,15 +1,4 @@
 
-#=
-TODO:
-
-* Make sure CD-HIT is installed
-
-
-* Filter for empty ORF list
-=#
-
-const PATH_TO_HUMAN_REF = "../ref/human"
-
 using Pkg
 Pkg.activate(".")
 #Pkg.instantiate()
@@ -31,46 +20,49 @@ function main()
 
     # Clean the data
     isdir("results") || mkdir("results")
-    clean_the_data(joinpath("results", "genomeset.clean.dat"), joinpath("raw", "genomeset.dat.gz"))
+    clean_the_data(joinpath("results", "genomeset.clean.dat"), joinpath("download", "genomeset.dat.gz"))
 
     # Parse genomeset to SegmentData with all basic info
     segment_data = open(parse_cleaned_genomeset, joinpath("results", "genomeset.clean.dat"))
     
     # Load influenza.fna and update the seq field of the SegmentData
-    open(joinpath("raw", "influenza.fna.gz")) do io
+    open(joinpath("download", "influenza.fna.gz")) do io
         add_sequences!(segment_data, GzipDecompressorStream(io))
     end
 
     # Load influenza_aa.dat.gz to get information on what kind of protein
     # the different ORFs make
-    accession_protein_map = open(joinpath("raw", "influenza_aa.dat.gz")) do io
+    accession_protein_map = open(joinpath("download", "influenza_aa.dat.gz")) do io
         parse_inf_aa(GzipDecompressorStream(io))
     end
 
     # Load influenza.dat and update the ORF fields of SegmentData
-    open(joinpath("raw", "influenza.dat.gz")) do io
+    open(joinpath("download", "influenza.dat.gz")) do io
         add_orfs!(segment_data, accession_protein_map, GzipDecompressorStream(io))
     end
 
     # We remove the human sequences, because we want to add in a set of manually
-    # curated human sequences
-    filter!(pair -> last(pair).host != human, segment_data)
+    # curated human sequences. Also remove all species in we don't need.
+    filter!(pair -> last(pair).host ∈ (avian, swine), segment_data)
 
     # Add in the human ones - these are annotated by The NCBI Influenza Virus Sequence Annotation Tool
-    open("annotation.tbl.gz") do io
-        add_human_sequences!(segment_data, GzipDecompressorStream(io), PATH_TO_HUMAN_REF)
+    open(joinpath("raw", "annotation.tbl.gz")) do io
+        add_human_sequences!(segment_data, GzipDecompressorStream(io), joinpath("raw", "human.fna.gz"))
     end
 
     # Series of filters on the SegmentData
     filter_segment_data!(segment_data)
 
+    # Cluster using CD-hit for 95% identity
+    # This is a Dict{Species, Dict{Segment, Set{String}}}, where String == accessions
+    # (for human sequences, it's the "name" field instead)
+    deduplicated = cd_hit_deduplicate(segment_data)
+
     # Serialize to files
+    serialize_segments(segment_data, deduplicated)
 end
 
 function download_influenza_data(;force=false)
-    isdir("raw") && !force && return nothing
-
-    mkdir("raw")
     ftp_address = "https://ftp.ncbi.nih.gov/genomes/INFLUENZA/"
     for filename in [
         "genomeset.dat.gz",
@@ -78,7 +70,7 @@ function download_influenza_data(;force=false)
         "influenza.fna.gz",
         "influenza_aa.dat.gz"
         ]
-        download(joinpath(ftp_address, filename), joinpath("raw", filename))
+        download(joinpath(ftp_address, filename), joinpath("download", filename))
     end
 end
 
@@ -511,14 +503,13 @@ function is_all_translatable(data::SegmentData)::Bool
     return true
 end
 
-function add_human_sequences!(segment_data::Dict{String, SegmentData}, io::IO, dir::String)
+function add_human_sequences!(segment_data::Dict{String, SegmentData}, io::IO, humanpath::String)
     # First, get a dict of header => seq
     seq_by_header = Dict{String, LongDNASeq}()
-    for file in readdir(dir)
-        open(FASTA.Reader, joinpath(dir, file)) do reader
-            for record in reader
-                seq_by_header[FASTA.header(record)] = FASTA.sequence(LongDNASeq, record)
-            end
+    open(humanpath) do io
+        reader = FASTA.Reader(GzipDecompressorStream(io))
+        for record in reader
+            seq_by_header[FASTA.header(record)] = FASTA.sequence(LongDNASeq, record)
         end
     end
 
@@ -583,5 +574,134 @@ function parse_annot_segment_data(chunk::Vector{String})::SegmentData
     end
     SegmentData(none(String), human, species, segment, subtype, year, header, proteins, Ref(none(LongDNASeq)))
 end
+
+"Obtain a set of accepted gi for avian and swine"
+function cd_hit_deduplicate(segment_data::Dict{String, SegmentData}
+)::Dict{Species, Dict{Segment, Set{String}}}
+    @warn "Not deduplicating human sequences"
+
+    subdir = joinpath("results", "cdhit")
+    isdir(subdir) || mkdir(subdir)
+
+    byspecies = Dict(sp => SegmentData[] for sp in instances(Species))
+    for data in values(segment_data)
+        push!(byspecies[data.host], data)
+    end
+
+    result = Dict{Species, Dict{Segment, Set{String}}}()
+    for species in (swine, avian)
+        speciesdir = joinpath(subdir, string(species))
+        isdir(speciesdir) || mkdir(speciesdir)
+        println("Deduplicating $(string(species))...")
+        result[species] = cd_hit_deduplicate(byspecies[species], speciesdir)
+    end
+
+    # We simply add all human sequences here - no deduplication
+    human_dict = Dict(segment => Set{String}() for segment in instances(Segment))
+    result[human] = human_dict
+    for data in byspecies[human]
+        push!(human_dict[data.segment], data.name)
+    end
+
+    result
+end
+
+function cd_hit_deduplicate(data::Vector{SegmentData}, dirname::String
+)::Dict{Segment, Set{String}}
+    # Collect FASTAS by segment
+    bysegment = Dict(s => FASTA.Record[] for s in instances(Segment))
+    for segmentdata in data
+        record = FASTA.Record(unwrap(segmentdata.gi), unwrap(segmentdata.seq[]))
+        push!(bysegment[segmentdata.segment], record)
+    end
+
+    # Write FASTA paths
+    for (segment, seqs) in bysegment
+        fasta_path = joinpath(dirname, string(segment) * ".fna")
+        open(FASTA.Writer, fasta_path) do writer
+            for seq in seqs
+                write(writer, seq)
+            end
+        end
+    end
+
+    # Deduplicate
+    fasta_paths = [joinpath(dirname, string(segment) * ".fna") for segment in instances(Segment)]
+    run_cd_hit(fasta_paths)
+
+    # Load in the deduplicated ones
+    result = Dict(s => Set{String}() for s in instances(Segment))
+    for segment in instances(Segment)
+        result[segment] = open(joinpath(dirname, string(segment) * ".fna.cdhit")) do file
+            eachline(file) |>
+            Filter(x -> startswith(x, '>')) ⨟
+            Map(x -> x[2:end]) |>
+            Set
+        end
+    end
+
+    result
+end
+
+function run_cd_hit(paths::Vector{String})
+    Threads.@threads for path in paths
+        command = `bin/cd-hit-est -i $path -o $path.cdhit -aS 0.9 -c 0.95`
+        pipe = pipeline(command, stdout="$path.log")
+        run(pipe)
+    end
+end
+
+function serialize_segments(segment_data::Dict{String, SegmentData},
+    deduplicated::Dict{Species, Dict{Segment, Set{String}}}
+)
+    serial_dir = joinpath("results/deduplicated")
+    isdir(serial_dir) || mkdir(serial_dir)
+
+    for (species, segment_dict) in deduplicated
+        species_dir = joinpath(serial_dir, string(species))
+        isdir(species_dir) || mkdir(species_dir)
+
+        # Serialize the ORFs itself
+        for (segment, accessions) in segment_dict
+            jls_path = joinpath(species_dir, string(segment) * ".jls")
+            serialize_orfs(segment_data, accessions, jls_path) # TODO
+        end
+
+        # Write the deduplicated FASTA files
+        for (segment, accessions) in segment_dict
+            fasta_path = joinpath(species_dir, string(segment) * ".fna")
+            open(FASTA.Writer, fasta_path) do writer
+                for accession in accessions
+                    data = segment_data[accession]
+                    header = data.host == human ? data.name : unwrap(data.gi)
+                    record = FASTA.Record(header, unwrap(data.seq[]))
+                    write(writer, record)
+                end
+            end
+        end
+    end
+end
+
+function serialize_orfs(segment_data::Dict{String, SegmentData},
+    accessions::Set{String}, path::String)
+    #                 ProteinVar  Vector of orfs
+    ProteinType = Tuple{UInt8, Vector{UnitRange{UInt16}}}
+    #                accession  vector of proteins
+    SegmentType = Tuple{String, Vector{ProteinType}}
+    result = Vector{SegmentType}()
+    
+    for accession in accessions
+        data = segment_data[accession]
+        vec = Vector{ProteinType}()
+        segment_repr = (accession, vec)
+        push!(result, segment_repr)
+        for protein in data.proteins
+            var_uint8 = reinterpret(UInt8, protein.variant)
+            push!(vec, (var_uint8, protein.orfs))
+        end
+    end
+    serialize(path, result)
+end
+
 
 isinteractive() || main()

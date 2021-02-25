@@ -140,6 +140,13 @@ git-tree-sha1 = "b7f5e42dc867b8a8654a5f899064632dac05bc82"
 uuid = "1cb3b9ac-1ffd-5777-9e6b-a3d42300664d"
 version = "1.0.0"
 
+[[Influenza]]
+git-tree-sha1 = "253658bd64c04a7132be2a35e6296d1825f1b2fa"
+repo-rev = "master"
+repo-url = "/Users/jakobnissen/code/Influenza"
+uuid = "75be95bb-60e3-4423-b8b7-0f2a09593d53"
+version = "0.1.0"
+
 [[InitialValues]]
 git-tree-sha1 = "26c8832afd63ac558b98a823265856670d898b6c"
 uuid = "22cec73e-a1b8-11e9-2c92-598750a2cf9c"
@@ -300,7 +307,9 @@ version = "0.33.3"
 
 [[SumTypes]]
 deps = ["MacroTools"]
-git-tree-sha1 = "be127ca4ba297c1574457baa0ac3092b0054395e"
+git-tree-sha1 = "44ff9b86578c4e8a7a6ed2a8caf93392113008af"
+repo-rev = "master"
+repo-url = "/Users/jakobnissen/code/SumTypes.jl"
 uuid = "8e1ec7a9-0e02-4297-b0fe-6433085c89f2"
 version = "0.1.1"
 
