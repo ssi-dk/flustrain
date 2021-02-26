@@ -16,6 +16,8 @@ using Base: RefValue
 
 "Complete the entire workflow. Get an overview of all that happens here."
 function main()
+    println("Starting with $(Threads.nthreads()) threads.")
+
     # Get the data from the internet (except if it already exists)
     download_influenza_data(force=false)
 
@@ -64,6 +66,7 @@ function main()
 end
 
 function download_influenza_data(;force=false)
+    isdir("download") || mkdir("download")
     ftp_address = "https://ftp.ncbi.nih.gov/genomes/INFLUENZA/"
     for filename in [
         "genomeset.dat.gz",
@@ -72,6 +75,7 @@ function download_influenza_data(;force=false)
         "influenza_aa.dat.gz"
         ]
         download(joinpath(ftp_address, filename), joinpath("download", filename))
+        println("Downloaded $filename")
     end
 end
 
@@ -503,7 +507,7 @@ function cd_hit_deduplicate(segment_data::Dict{String, SegmentData}
     for species in (swine, avian)
         speciesdir = joinpath(subdir, string(species))
         isdir(speciesdir) || mkdir(speciesdir)
-        println("Deduplicating $(string(species))...")
+        println("Deduplicating $(string(species)) sequences...")
         result[species] = cd_hit_deduplicate(byspecies[species], speciesdir)
     end
 
