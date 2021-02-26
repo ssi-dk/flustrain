@@ -10,6 +10,7 @@ using FASTX # commit e9ff73b65e6638ed740b2fce5a01b254ecb24c55
 using Serialization
 using Transducers
 using UnicodePlots
+using Influenza
 
 using Base: RefValue
 
@@ -152,20 +153,11 @@ function parse_name(s::Union{String, SubString})::Option{String}
     return some(String(rest3))
 end
 
-@enum Segment::UInt8 PB1 PB2 PA HA NP NA MP NS
-
 function parse_from_integer(::Type{Segment}, s::AbstractString)::Option{Segment}
     y = tryparse(UInt8, s)
     y === nothing && return none
     (iszero(y) | (y > 0x08)) && return none
     some(reinterpret(Segment, y - 0x01))
-end
-
-const SEGMENT_STR_DICT = Dict(string(s)=>s for s in instances(Segment))
-function parse_from_name(::Type{Segment}, s::AbstractString)::Option{Segment}
-    y = get(SEGMENT_STR_DICT, s, nothing)
-    y === nothing && return none
-    some(y)
 end
 
 @enum Species::UInt8 human swine avian other
@@ -177,91 +169,20 @@ function Species(s::Union{String, SubString})::Species
     return other
 end
 
-struct SubType
-    H::UInt8
-    N::UInt8
-    B::UInt8 # 0 for inf A, 1 for victoria, 2 for yamagata
-end
-
-function Base.show(io::IO, s::SubType)
-    iszero(s.B) && return print(io, 'H', s.H, 'N', s.N)
-    print(io, s.B === 0x01 ? "Victoria" : "Yamagata")
-end
-
-@enum FluSpecies::UInt8 InfluenzaA InfluenzaB
-
-# Note: Some of these variants may be transient names given in the current literature.
-@enum ProteinVariant::UInt8 begin
-    pb2
-    pb1
-    n40 # very rarely seen
-    pb1f2 # inf A only
-    pa
-    pax # inf A only
-    ha
-    np
-    na
-    nb # inf B only
-    m1
-    m2 # inf A only
-    bm2 # inf B only
-    m42 # uncommon
-    ns1
-    nep
-    ns3 # uncommon
-end
-
-const _STR_PROTEINVARIANT = Dict(
-    "PB2" => pb2,
-    "PB1" => pb1,
-    "N40" => n40,
-    "PB1-F2" => pb1f2,
-    "PA" => pa,
-    "PA-X" => pax,
-    "HA" => ha,
-    "NP" => np,
-    "NA" => na,
-    "NB" => nb,
-    "M1" => m1,
-    "M2" => m2,
-    "BM2" => bm2,
-    "M42" => m42,
-    "NS1" => ns1,
-    "NS2" => nep,
-    "NEP" => nep, # yeah, it has two names
-    "NS3" => ns3,
-)
-
-# Parse how it's presented in the NCBI files
-function Base.parse(::Type{ProteinVariant}, s::AbstractString)::Option{ProteinVariant}
-    y = get(_STR_PROTEINVARIANT, s, nothing)
-    y === nothing ? none : some(y)
-end
-
-struct Protein
-    variant::ProteinVariant
+struct ProteinORF
+    variant::Protein
     orfs::Vector{UnitRange{UInt16}}
 end
 
 struct SegmentData
     gi::Option{String} # missing in human samples
     host::Species
-    fluspecies::FluSpecies
     segment::Segment
     subtype::SubType
     year::Int
     name::String
-    proteins::Vector{Protein}
+    proteins::Vector{ProteinORF}
     seq::RefValue{Option{LongDNASeq}}
-end
-
-function Base.parse(::Type{SubType}, s::Union{String, SubString})::Option{SubType}
-    isempty(s) && return none
-    s == "Victoria" && return some(SubType(0x00, 0x00, 0x01))
-    s == "Yamagata" && return some(SubType(0x00, 0x00, 0x02))
-    m = match(r"^H(\d+)N(\d+)$", s)
-    m === nothing && error("UNKNOWN SUBTYPE: $s")
-    some(SubType(parse(UInt8, m[1]), parse(UInt8, m[2]), 0x00))
 end
 
 function parse_cleaned_genomeset(io::IO)::Dict{String, SegmentData}
@@ -280,11 +201,10 @@ function Base.parse(::Type{SegmentData}, line::Union{String, SubString{String}})
     subtype = @? parse(SubType, fields[4])
     year = @? parse_year(fields[6])
     host = Species(fields[2])
-    fluspecies = @? parse_fluspecies(fields[8])
     gi = String(fields[1])
     name = String(fields[8])
     segment = @? parse_from_integer(Segment, fields[3])
-    some(SegmentData(some(gi), host, fluspecies, segment, subtype, year, name, Protein[], Ref(none(LongDNASeq))))
+    some(SegmentData(some(gi), host, segment, subtype, year, name, ProteinORF[], Ref(none(LongDNASeq))))
 end
 
 function parse_year(s::Union{String, SubString})::Option{Int}
@@ -292,16 +212,6 @@ function parse_year(s::Union{String, SubString})::Option{Int}
     pos_slash_found = findfirst(isequal('/'), s)
     last_byte = pos_slash_found === nothing ? ncodeunits(s) : pos_slash_found - 1
     return some(parse(Int, SubString(s, 1:last_byte)))
-end
-
-function parse_fluspecies(name::Union{String, SubString{String}})::Option{FluSpecies}
-    if startswith(name, "A/")
-        return some(InfluenzaA)
-    elseif startswith(name, "B/")
-        return some(InfluenzaB)
-    else
-        return none
-    end
 end
 
 function add_sequences!(segment_data::Dict{String, SegmentData}, io::IO)
@@ -319,12 +229,12 @@ function add_sequences!(segment_data::Dict{String, SegmentData}, io::IO)
     segment_data
 end
 
-function parse_inf_aa(io::IO)::Dict{String, ProteinVariant}
-    result = Dict{String, ProteinVariant}()
+function parse_inf_aa(io::IO)::Dict{String, Protein}
+    result = Dict{String, Protein}()
     for line in eachline(io) |> Map(strip) ⨟ Filter(!isempty)
         fields = split(line, '\t')
         accession = first(fields)
-        variant = @unwrap_or parse(ProteinVariant, fields[3]) continue
+        variant = @unwrap_or parse(Protein, fields[3]) continue
         @assert !haskey(result, accession) "Duplicate key $accession"
         result[accession] = variant
     end
@@ -332,9 +242,9 @@ function parse_inf_aa(io::IO)::Dict{String, ProteinVariant}
 end
 
 
-function add_orfs!(segment_data::Dict{String, SegmentData}, accession_protein_map::Dict{String, ProteinVariant}, io::IO)
+function add_orfs!(segment_data::Dict{String, SegmentData}, accession_protein_map::Dict{String, Protein}, io::IO)
     n_updates = 0
-    proteinbuffer = Protein[]
+    proteinbuffer = ProteinORF[]
     for line in eachline(io) |> Map(strip) ⨟ Filter(!isempty)
         fields = split(line, '\t')
         gb_accession = first(fields)
@@ -358,7 +268,7 @@ function add_orfs!(segment_data::Dict{String, SegmentData}, accession_protein_ma
                 is_bad = true
                 break
             end
-            push!(proteinbuffer, Protein(variant, unwrap(orfs)))
+            push!(proteinbuffer, ProteinORF(variant, unwrap(orfs)))
         end
         if !is_bad
             append!(data.proteins, proteinbuffer)
@@ -451,17 +361,25 @@ end
 
 function contains_minimum_proteins(data::SegmentData)::Bool
     n_proteins = length(data.proteins)
-    if data.segment in (PB2, PB1, HA, NP)
+    if data.segment in (Segments.PB2, Segments.PB1, Segments.HA, Segments.NP)
         return !iszero(n_proteins)
     end
-    if data.segment == NA
-        return n_proteins ≥ (data.fluspecies == InfluenzaA ? 1 : 2)
+    if data.segment == Segments.NA
+        return n_proteins ≥ if data.subtype.data isa SubTypes.InfluenzaA
+            1
+        else
+            2
+        end
     end
-    if data.segment in (MP, NS)
+    if data.segment in (Segments.MP, Segments.NS)
         return n_proteins ≥ 2
     end
-    if data.segment == PA
-        return n_proteins ≥ (data.fluspecies == InfluenzaA ? 2 : 1)
+    if data.segment == Segments.PA
+        return n_proteins ≥ if data.subtype.data isa SubTypes.InfluenzaA
+            2
+        else
+            1
+        end
     end
     @assert false "Unreachable"
 end
@@ -469,19 +387,19 @@ end
 # This has been empirially determined by looking at the distributions
 # in order to find outliers
 const ACCEPTABLE_SEGMENT_LENGTHS = Dict(
-    NP => 1490:1570,
-    HA => 1680:1780,
-    MP => 980:1030,
-    PB1 => 2270:2345,
-    PA => 2150:2240,
-    NA => 1350:1470,  # very wide distribution??
-    NS => 820:895,
-    PB2 => 2280:2345
+    Segments.NP => 1490:1570,
+    Segments.HA => 1680:1780,
+    Segments.MP => 980:1030,
+    Segments.PB1 => 2270:2345,
+    Segments.PA => 2150:2240,
+    Segments.NA => 1350:1470,  # very wide distribution??
+    Segments.NS => 820:895,
+    Segments.PB2 => 2280:2345
 )
 
 function has_acceptable_seq_length(data::SegmentData)::Bool
     # The sizes for influenza B are a little different.
-    data.fluspecies == InfluenzaB && return true
+    data.subtype.data isa Union{SubTypes.Victoria, SubTypes.Yamagata} && return true
     length(unwrap(data.seq[])) in ACCEPTABLE_SEGMENT_LENGTHS[data.segment]
 end
 
@@ -544,17 +462,10 @@ function parse_annot_segment_data(chunk::Vector{String})::SegmentData
     @assert startswith(first(chunk), ">Feature ")
     header = first(chunk)[10:end]
     headerfields = split(header, '|')
-    species = if startswith(first(headerfields), "A/")
-        InfluenzaA
-    elseif startswith(first(headerfields), "B/")
-        InfluenzaB
-    else
-        error(first(headerfields))
-    end
     subtype = unwrap(parse(SubType, headerfields[2]))
     year = parse(Int, last(split(first(headerfields), '/')))
-    segment = expect(parse_from_name(Segment, headerfields[3]), "Error on chunk $header")
-    proteins = Protein[]
+    segment = expect(parse(Segment, headerfields[3]), "Error on chunk $header")
+    proteins = ProteinORF[]
     orfs = UnitRange{UInt16}[]
     reading_cds = false
     for line in @view chunk[2:end]
@@ -566,13 +477,13 @@ function parse_annot_segment_data(chunk::Vector{String})::SegmentData
             push!(orfs, parse(UInt16, fields[1]) : parse(UInt16, fields[2]))
         end
         if reading_cds && fields[1] == "gene"
-            variant = expect(parse(ProteinVariant, fields[2]), "Error on chunk $header")
+            variant = expect(parse(Protein, fields[2]), "Error on chunk $header")
             reading_cds = false
-            push!(proteins, Protein(variant, copy(orfs)))
+            push!(proteins, ProteinORF(variant, copy(orfs)))
             empty!(orfs)
         end
     end
-    SegmentData(none(String), human, species, segment, subtype, year, header, proteins, Ref(none(LongDNASeq)))
+    SegmentData(none(String), human, segment, subtype, year, header, proteins, Ref(none(LongDNASeq)))
 end
 
 "Obtain a set of accepted gi for avian and swine"
@@ -684,7 +595,7 @@ end
 
 function serialize_orfs(segment_data::Dict{String, SegmentData},
     accessions::Set{String}, path::String)
-    #                 ProteinVar  Vector of orfs
+    #                 Protein  Vector of orfs
     ProteinType = Tuple{UInt8, Vector{UnitRange{UInt16}}}
     #                accession  vector of proteins
     SegmentType = Tuple{String, Vector{ProteinType}}
