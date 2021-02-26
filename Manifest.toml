@@ -309,6 +309,14 @@ git-tree-sha1 = "b7f5e42dc867b8a8654a5f899064632dac05bc82"
 uuid = "1cb3b9ac-1ffd-5777-9e6b-a3d42300664d"
 version = "1.0.0"
 
+[[Influenza]]
+deps = ["ErrorTypes", "SumTypes"]
+git-tree-sha1 = "de09e101eb530e65264316330d6b67e1c4bc1457"
+repo-rev = "master"
+repo-url = "/Users/jakobnissen/code/Influenza"
+uuid = "75be95bb-60e3-4423-b8b7-0f2a09593d53"
+version = "0.1.0"
+
 [[IniFile]]
 deps = ["Test"]
 git-tree-sha1 = "098e4d2c533924c921f9f9847274f2ad89e018b8"

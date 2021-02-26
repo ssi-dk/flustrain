@@ -7,6 +7,7 @@ using BioSequences
 using BioAlignments
 using CodecZlib
 using ErrorTypes
+using Influenza
 using Printf
 using Serialization
 using Plots
@@ -18,35 +19,11 @@ const TERMINAL = 25
 imap(f) = x -> Iterators.map(f, x)
 ifilter(f) = x -> Iterators.filter(f, x)
 
-"""
-    Segment(::String) -> Segment
-
-Create a representaiton of one of the eight Influenza A genome segments.
-"""
-@enum Segment::UInt8 PB1 PB2 PA HA NP NA MP NS
 const SegmentTuple{T} = NTuple{length(instances(Segment)), T}
-const _STR_SEGMENT = map(string, instances(Segment))
-function Segment(s::AbstractString)
-    i = findfirst(isequal(s), _STR_SEGMENT)
-    #smt = get(_STR_SEGMENT, s, nothing)
-    i === nothing && error("Unknown segment: \"$s\"")
-    @inbounds instances(Segment)[i]
-end
 
-@enum ProteinVariant::UInt8 pb2 pb1 pb1fa pa pax ha np na m1 m2 ns1 nep
-function Base.print(io::IO, var::ProteinVariant)
-    str = if var == pb1fa
-        "PB1-FA"
-    elseif var == pax
-        "PA-X"
-    else
-        uppercase(string(Symbol(var)))
-    end
-    print(io, str)
-end
-
-const _CRITICAL = Bool[1,1,0,1,0,1,1,1,1,1,1,1]
-is_critical(x::ProteinVariant) = @inbounds _CRITICAL[reinterpret(UInt8, x) + 0x01]
+const _CRITICAL = Tuple(Bool[1,1,0,0,1,0,1,1,1,1,1,1,1,0,1,1,1])
+@assert length(_CRITICAL) == length(instances(Protein))
+is_critical(x::Protein) = @inbounds _CRITICAL[reinterpret(UInt8, x) + 0x01]
 
 const ALN_MODEL = AffineGapScoreModel(EDNAFULL, gap_open=-25, gap_extend=-2)
 const AA_ALN_MODEL = AffineGapScoreModel(BLOSUM62, gap_open=-10, gap_extend=-2)
@@ -57,15 +34,15 @@ struct Depths
 end
 
 # Data retrieved from the reference files
-struct Protein
-    var::ProteinVariant
+struct ProteinORF
+    var::Protein
     # a bitvector over its reference seq with 1s for coding nucleotides, incl last stop
     mask::BitVector
 end
 
 struct Reference
     seq::LongDNASeq
-    proteins::Vector{Protein}
+    proteins::Vector{ProteinORF}
 end
 
 # Data retrieved from the .fsa files
@@ -81,7 +58,7 @@ struct ErrorMessage
 end
 
 struct ORFData
-    variant::ProteinVariant
+    variant::Protein
     seq::LongDNASeq
     aaseq::LongAminoAcidSeq
     identity::Option{Float64}
@@ -181,7 +158,7 @@ function load_depths(matpath::AbstractString)::SegmentTuple{Option{Vector{UInt32
                 # Headers look like "HEADER_HA"
                 p = findlast(isequal('_'), line)
                 p === nothing && error("Found header \"$(line)\", expected pattern \"HEADER_SEGMENT\"")
-                segment = Segment(line[p+1:end])
+                segment = unwrap(parse(Segment, line[p+1:end]))
                 continue
             end
             split!(fields, line, UInt8('\t'))
@@ -209,7 +186,7 @@ function load_res_file(resfilename::AbstractString)::SegmentTuple{Option{Float64
         result = fill(none(Float64), length(instances(Segment)))
         @assert header == "#Template\tScore\tExpected\tTemplate_length\tTemplate_Identity\tTemplate_Coverage\tQuery_Identity\tQuery_Coverage\tDepth\tq_value\tp_value"
         for fields in (lines |> imap(strip) |> ifilter(!isempty) |> imap(x -> split!(fields, x, UInt8('\t'))))
-            segment = Segment(strip(last(rsplit(first(fields), '_', limit=2))))
+            segment = unwrap(parse(Segment, strip(last(rsplit(first(fields), '_', limit=2)))))
             segment_index = reinterpret(UInt8, segment) + 0x01
             is_error(result[segment_index]) || error("Segment $(string(segment)) present twice in file $resfilename")
             result[segment_index] = some(parse(Float64, fields[5]) / 100)
@@ -255,14 +232,14 @@ function load_references(references::Set{Tuple{Segment, String}}, refdir::Abstra
                         error("Accession $accession missing from $seqpath")
                     end
                     seq = seqof[accession]
-                    reference = Reference(seq, Protein[])
+                    reference = Reference(seq, ProteinORF[])
                     result[(segment, accession)] = reference
                     for (var_uint8, orf_tuple) in v
                         mask = falses(length(seq))
                         for orf in orf_tuple
                             @view(mask[orf]) .= true
                         end
-                        push!(reference.proteins, Protein(ProteinVariant(var_uint8), mask))
+                        push!(reference.proteins, ProteinORF(Protein(var_uint8), mask))
                     end
                     push!(added_accessions, accession)
                 end
@@ -292,7 +269,7 @@ function push_codon(x::DNACodon, nt::DNA)
 end
 
 # A function to get the Assembly and the Reference
-function gather_aln(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNASeq})
+function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, LongDNASeq})
     nucleotides = DNA[]
     last_ref_pos = findlast(protein.mask)
     codon = mer"AAA" # arbitrary starting codon
@@ -383,7 +360,7 @@ function gather_aln(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNA
     return dnaseq, messages, indel_messages
 end
 
-function ORFData(protein::Protein, aln::PairwiseAlignment{LongDNASeq, LongDNASeq},
+function ORFData(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, LongDNASeq},
     ref::Reference)
     orfseq, messages, indel_messages = gather_aln(protein, aln)
     aaseq = BioSequences.translate(orfseq)
@@ -440,7 +417,7 @@ function load_assembly(assemblypath::AbstractString)::SegmentTuple{Option{Assemb
             v = rsplit(id, '_', limit=2)
             length(v) == 2 || error("Found header \"$(id)\", expected pattern \"HEADER_SEGMENT\"")
             accession = first(v)
-            segment = Segment(last(v))
+            segment = unwrap(parse(Segment, last(v)))
             segment_index = reinterpret(UInt8, segment) + 0x01
             seq = FASTA.sequence(LongDNASeq, record)
             @assert length(record.sequence) == length(seq)
