@@ -323,7 +323,8 @@ checkpoint create_report:
         assembly=expand("aln/{basename}/kma2.fsa", basename=BASENAMES),
         res=expand("aln/{basename}/kma2.res", basename=BASENAMES)
     output:
-        consensus=expand("consensus/{basename}/consensus.fna", basename=BASENAMES),
+        consensus=expand("consensus/{basename}/{type}.{nuc}",
+            basename=BASENAMES, type=["consensus", "curated"], nuc=["fna", "faa"]),
         report="report.txt",
         depths=expand("depths/{basename}.pdf", basename=BASENAMES)
     params:

@@ -431,19 +431,21 @@ end
 
 function report_lines(basename::AbstractString, data_vec::Vector{Tuple{Segment, Option{SegmentData}}})
     lines = [basename * ':']
-    for (segment, maybe_data) in data_vec
-        push_report_lines!(lines, segment, maybe_data)
+    is_ok = trues(length(data_vec))
+    for (i, (segment, maybe_data)) in enumerate(data_vec)
+        is_ok[i] = push_report_lines!(lines, segment, maybe_data)
     end
     push!(lines, "")
+    (lines, is_ok)
 end
 
-function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data::Option{SegmentData})
+function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data::Option{SegmentData})::Bool
     beginning = '\t' * rpad(string(segment) * ":", 4)
 
     # Check presence of segment
     if is_error(maybe_data)
         push!(lines, beginning * "\n\t\tERROR: Missing segment")
-        return nothing
+        return false
     end
     data = unwrap(maybe_data)
 
@@ -451,8 +453,10 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     minlen = min(length(data.seq), length(data.depths))
     if minlen < 2 * TERMINAL + 1
         push!(lines, beginning * "\n\t\tERROR: Sequence or depths length: $minlen")
-        return nothing
+        return false
     end
+
+    is_ok = true
 
     # Header: HA: depth 4.32e+03 coverage 1.000 
     mean_depth = sum(UInt, data.depths) / length(data.depths)
@@ -464,8 +468,8 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     push!(lines, beginning * " $depthstr $covstr $idstr")
 
     # Warning if coverage or identity is too low
-    coverage < 0.9 && push!(lines, "\t\t ERROR: Coverage is less than 90%")
-    is_error(identity) || unwrap(identity) < 0.9 && push!(lines, "\t\t ERROR: Identity is less than 90%")
+    coverage < 0.9 && (push!(lines, "\t\t ERROR: Coverage is less than 90%"); is_ok = false)
+    is_error(identity) || unwrap(identity) < 0.9 && (push!(lines, "\t\t ERROR: Identity is less than 90%"); is_ok = false)
 
     # Warning if identity b/w first and second assembly too low (asm not converged)
     if data.assembly_identity < 0.995
@@ -476,18 +480,21 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     n_insignificant = count(data.insignificant)
     if !iszero(n_insignificant)
         push!(lines, "\t\t       $(n_insignificant) bases insignificantly basecalled")
+        n_insignificant > 4 && (is_ok = false)
     end
 
     # Check for low depths
     lowdepth = count(x -> x < 25, @view data.depths[TERMINAL + 1: end - TERMINAL])
     if !iszero(lowdepth)
         push!(lines, "\t\t       $lowdepth central bases with depth < 25")
+        lowdepth > 4 && (is_ok = false)
     end
 
     # Check for ambiguous bases
     amb = count(isambiguous, data.seq)
     if !iszero(amb)
         push!(lines, "\t\t       $amb ambiguous bases in consensus sequence")
+        amb > 4 && (is_ok = false)
     end
 
     for orfdata in data.orfdata
@@ -502,8 +509,11 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
         for msg in orfdata.errors
             push_msg(lines, msg, 2)
         end
+        if any(x -> x.critical, orfdata.errors) || any(x -> x.critical, orfdata.indel_errors)
+            is_ok = false
+        end
     end
-    lines
+    is_ok
 end
 
 # This function is thread-unsafe, and must be called in serial.
@@ -563,9 +573,13 @@ function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::Abs
 
     # Create the report
     lines_vectors = Vector{Vector{String}}(undef, length(basenames))
+    is_oks = Vector{BitVector}(undef, length(basenames))
     Threads.@threads for (i, (basename, data_vec)) in collect(enumerate(segment_data))
-        lines_vectors[i] = report_lines(basename, data_vec)
+        (lines, is_ok) = report_lines(basename, data_vec)
+        lines_vectors[i] = lines
+        is_oks[i] = is_ok
     end
+    is_ok = Dict(basename => ok for (basename, ok) in zip(basenames, is_oks))
 
     open(reportpath, "w") do report
         for linevec in lines_vectors
@@ -577,18 +591,27 @@ function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::Abs
 
     # Create consensus files - both DNA and AA
     for (basename, data_vec) in segment_data
-        open(FASTA.Writer, joinpath(outdir, basename, "consensus.fna")) do writer
-            for (segment, maybe_data) in data_vec
-                data = (@unwrap_or maybe_data continue)::SegmentData
-                write(writer, FASTA.Record(basename, segment, data.seq, data.insignificant))
-            end
-        end
+        basename_is_ok = is_ok[basename]
+        for curated in (false, true) 
+            name = curated ? "curated" : "consensus"
 
-        open(FASTA.Writer, joinpath(outdir, basename, "consensus.faa")) do writer
-            for (segment, maybe_data) in data_vec
-                data = (@unwrap_or maybe_data continue)::SegmentData
-                for orfdata in data.orfdata
-                    write(writer, FASTA.Record(basename * '_' * string(orfdata.variant), orfdata.aaseq))
+            # DNA
+            open(FASTA.Writer, joinpath(outdir, basename, "$name.fna")) do writer
+                for (ok, (segment, maybe_data)) in zip(basename_is_ok, data_vec)
+                    !ok && curated && continue
+                    data = (@unwrap_or maybe_data continue)::SegmentData
+                    write(writer, FASTA.Record(basename, segment, data.seq, data.insignificant))
+                end
+            end
+
+            # AA
+            open(FASTA.Writer, joinpath(outdir, basename, "$name.faa")) do writer
+                for (ok, (segment, maybe_data)) in zip(basename_is_ok, data_vec)
+                    !ok && curated && continue
+                    data = (@unwrap_or maybe_data continue)::SegmentData
+                    for orfdata in data.orfdata
+                        write(writer, FASTA.Record(basename * '_' * string(orfdata.variant), orfdata.aaseq))
+                    end
                 end
             end
         end
