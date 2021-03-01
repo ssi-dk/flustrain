@@ -183,7 +183,7 @@ struct SegmentData
     host::Species
     segment::Segment
     subtype::SubType
-    year::Int
+    year::Int16
     name::String
     proteins::Vector{ProteinORF}
     seq::RefValue{Option{LongDNASeq}}
@@ -211,11 +211,11 @@ function Base.parse(::Type{SegmentData}, line::Union{String, SubString{String}})
     some(SegmentData(some(gi), host, segment, subtype, year, name, ProteinORF[], Ref(none(LongDNASeq))))
 end
 
-function parse_year(s::Union{String, SubString})::Option{Int}
+function parse_year(s::Union{String, SubString})::Option{Int16}
     isempty(s) && return none
     pos_slash_found = findfirst(isequal('/'), s)
     last_byte = pos_slash_found === nothing ? ncodeunits(s) : pos_slash_found - 1
-    return some(parse(Int, SubString(s, 1:last_byte)))
+    return some(parse(Int16, SubString(s, 1:last_byte)))
 end
 
 function add_sequences!(segment_data::Dict{String, SegmentData}, io::IO)
@@ -467,7 +467,7 @@ function parse_annot_segment_data(chunk::Vector{String})::SegmentData
     header = first(chunk)[10:end]
     headerfields = split(header, '|')
     subtype = unwrap(parse(SubType, headerfields[2]))
-    year = parse(Int, last(split(first(headerfields), '/')))
+    year = parse(Int16, last(split(first(headerfields), '/')))
     segment = expect(parse(Segment, headerfields[3]), "Error on chunk $header")
     proteins = ProteinORF[]
     orfs = UnitRange{UInt16}[]

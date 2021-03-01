@@ -23,6 +23,16 @@ if config["refset"] not in ["human", "swine", "avian"]:
     raise KeyError("refset must be 'human', 'swine' or 'avian'")
 
 READDIR = config["readdir"]
+
+# For some reason it all fucks up if the read directory is a child of the running
+# directory, so we check that here.
+_dir = READDIR
+root = os.path.abspath(".").split(os.path.sep)[0]
+while _dir != root:
+    if _dir == os.getcwd():
+        raise ValueError("Error: Read path cannot be child directory of running directory")
+    _dir = os.path.dirname(_dir)
+
 READ_PAIRS = tools.get_read_pairs(READDIR)
 BASENAMES = sorted(READ_PAIRS.keys())
 
