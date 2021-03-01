@@ -66,6 +66,7 @@ function main()
 end
 
 function download_influenza_data(;force=false)
+    isdir("download") && !force && return nothing
     isdir("download") || mkdir("download")
     ftp_address = "https://ftp.ncbi.nih.gov/genomes/INFLUENZA/"
     for filename in [

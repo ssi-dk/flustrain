@@ -209,7 +209,7 @@ function load_references(references::Set{Tuple{Segment, String}}, refdir::Abstra
     result = Dict{Tuple{Segment, String}, Reference}()
     for (segment, accessions) in bysegment
         seqpath = joinpath(refdir, "$segment.fna")
-        orfpath = joinpath(refdir, "$segment.orfs.jls")
+        orfpath = joinpath(refdir, "$segment.jls")
 
         # Get the sequence
         seqof = Dict{String, LongDNASeq}()
