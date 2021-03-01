@@ -97,7 +97,7 @@ rule all:
     input: done_input
     output: "commit.txt"
     params: SNAKEDIR
-    shell: "git -C {params} rev-parse --short HEAD > {output}"
+    shell: "git -C {params} rev-parse --short HEAD > {output} && cp {params}/copy_readme.md README.md"
 
 ############################
 # Alignment module
@@ -272,7 +272,7 @@ rule remove_primers:
     input:
         con=rules.first_kma_map.output.fsa,
         primers=f"{SNAKEDIR}/ref/primers.fna"
-    output: "aln/{basename}/cat.trimmed.fna" 
+    output: temp("aln/{basename}/cat.trimmed.fna")
     log: "log/consensus/remove_primers_{basename}.txt"
     params:
         juliacmd=JULIA_COMMAND,
@@ -288,10 +288,10 @@ rule remove_primers:
 rule second_kma_index:
     input: "aln/{basename}/cat.trimmed.fna"
     output:
-        comp="aln/{basename}/cat.trimmed.comp.b",
-        name="aln/{basename}/cat.trimmed.name",
-        length="aln/{basename}/cat.trimmed.length.b",
-        seq="aln/{basename}/cat.trimmed.seq.b"
+        comp=temp("aln/{basename}/cat.trimmed.comp.b"),
+        name=temp("aln/{basename}/cat.trimmed.name"),
+        length=temp("aln/{basename}/cat.trimmed.length.b"),
+        seq=temp("aln/{basename}/cat.trimmed.seq.b")
     params:
         t_db="aln/{basename}/cat.trimmed"
     log: "log/aln/kma2_index_{basename}.log"
