@@ -24,4 +24,4 @@ Indeholder konsensus-sekvenser
 Logfiler fra de forskellige programmer. Kun brugbar til fejlfinding af programmerne.
 
 ### phylogeny
-Automatiske fylogenetiske træer. Se her for at finde kladebestemmelsen.
+Automatiske fylogenetiske træer. Kun de "curated" konsensussekvenser er automatisk inkluderede her. Se her for at finde kladebestemmelsen.
