@@ -49,17 +49,15 @@ function main()
     # curated human sequences. Also remove all species in we don't need.
     filter!(pair -> last(pair).host ∈ (avian, swine), segment_data)
 
-    # Add in the human ones - these are annotated by The NCBI Influenza Virus Sequence Annotation Tool
-    open(joinpath("raw", "annotation.tbl.gz")) do io
-        add_human_sequences!(segment_data, GzipDecompressorStream(io), joinpath("raw", "human.fna.gz"))
-    end
+    # Add extra records - these are annotated by The NCBI Influenza Virus Sequence Annotation Tool
+    # and manually curated to have the exact right format of the header
+    add_extra_records!(segment_data, joinpath("raw", "annotation.tbl.gz"), joinpath("raw", "seqs.fna.gz"))
 
     # Series of filters on the SegmentData
     filter_segment_data!(segment_data)
 
     # Cluster using CD-hit for 95% identity
-    # This is a Dict{Species, Dict{Segment, Set{String}}}, where String == accessions
-    # (for human sequences, it's the "name" field instead)
+    # This is a Dict{Segment, Set{String}}, where String == accessions
     deduplicated = cd_hit_deduplicate(segment_data)
 
     # Serialize to files
@@ -101,8 +99,10 @@ function clean_the_data(outpath, inpath)
         subtype_upper = uppercase(subtype)
         subtype = if startswith(subtype_upper, "MIXED")
             ""
-        elseif subtype in ["H1", "H11N9/N2", "H1N2v", "H3N2v"]
+        elseif subtype in ["H1", "H11N9/N2"]
             ""
+        elseif subtype in ["H1N2v", "H3N2v"]
+            subtype[1:end-1]
         elseif subtype == "H3N6,H3"
             "H3N6"
         elseif subtype == "H6N1,H6"
@@ -168,10 +168,11 @@ end
 
 @enum Species::UInt8 human swine avian other
 
-function Species(s::Union{String, SubString})::Species
-    s == "Human" && return human
-    s == "Swine" && return swine
-    s == "Avian" && return avian
+function Base.parse(::Type{Species}, s::Union{String, SubString})::Species
+    lcase = lowercase(s)
+    lcase == "human" && return human
+    lcase == "swine" && return swine
+    lcase == "avian" && return avian
     return other
 end
 
@@ -181,10 +182,11 @@ struct ProteinORF
 end
 
 struct SegmentData
-    gi::Option{String} # missing in human samples
+    id::String
     host::Species
     segment::Segment
     subtype::SubType
+    clade::Option{String}
     year::Int16
     name::String
     proteins::Vector{ProteinORF}
@@ -195,7 +197,7 @@ function parse_cleaned_genomeset(io::IO)::Dict{String, SegmentData}
     result = Dict{String, SegmentData}()
     for line in eachline(io) |> Map(strip) ⨟ Filter(!isempty)
         data = @unwrap_or parse(SegmentData, line) continue
-        gi = unwrap(data.gi)
+        gi = data.id
         @assert !haskey(result, gi) "GB identifier $(gi) not unique"
         result[gi] = data
     end
@@ -206,11 +208,11 @@ function Base.parse(::Type{SegmentData}, line::Union{String, SubString{String}})
     fields = split(line, '\t')
     subtype = @? parse(SubType, fields[4])
     year = @? parse_year(fields[6])
-    host = Species(fields[2])
+    host = parse(Species, fields[2])
     gi = String(fields[1])
     name = String(fields[8])
     segment = @? parse_from_integer(Segment, fields[3])
-    some(SegmentData(some(gi), host, segment, subtype, year, name, ProteinORF[], Ref(none(LongDNASeq))))
+    some(SegmentData(gi, host, segment, subtype, none(String), year, name, ProteinORF[], Ref(none(LongDNASeq))))
 end
 
 function parse_year(s::Union{String, SubString})::Option{Int16}
@@ -427,25 +429,69 @@ function is_all_translatable(data::SegmentData)::Bool
     return true
 end
 
-function add_human_sequences!(segment_data::Dict{String, SegmentData}, io::IO, humanpath::String)
-    # First, get a dict of header => seq
-    seq_by_header = Dict{String, LongDNASeq}()
-    open(humanpath) do io
+function add_extra_records!(segment_data::Dict{String, SegmentData}, annotpath::String, fastapath::String)
+    # id => data from the FASTA file
+    records = get_extra_records(fastapath)
+
+    # Add info from annotated ORFS
+    fill_orfs_extra_records!(records, annotpath)
+
+    # Merge with the original segment_data dict
+    @assert isdisjoint(keys(segment_data), keys(records))
+    println(length(segment_data))
+    merge!(segment_data, records)
+end
+
+function get_extra_records(fastapath::String)
+    records = Dict{String, SegmentData}()
+    open(fastapath) do io
         reader = FASTA.Reader(GzipDecompressorStream(io))
-        for record in reader
-            seq_by_header[FASTA.header(record)] = FASTA.sequence(LongDNASeq, record)
+        record = FASTA.Record()
+        while !eof(reader)
+            read!(reader, record)
+            data = parse_data_from_header(FASTA.header(record)::String)
+            data.seq[] = some(FASTA.sequence(LongDNASeq, record))
+            @assert !haskey(records, data.id)
+            records[data.id] = data
         end
     end
+    records
+end
 
-    chunks = partition_chunks(io)
-    for chunk in chunks
-        data = parse_annot_segment_data(chunk)
-        @assert !haskey(segment_data, data.name)
-        data.seq[] = some(seq_by_header[data.name])
-        segment_data[data.name] = data
+function parse_data_from_header(header::String)::SegmentData
+    # Looks like this "EPI1843298|avian|NS|H1N1|2021|A/Denmark/1/2021|CLADE"
+    # some of the fields may be empty
+    fields = split(header, '|')
+    @assert length(fields) == 7
+    id, s_species, s_segment, s_subtype, s_year, name, clade = fields
+    @assert !isempty(id)
+    @assert !isempty(name)
+    species = parse(Species, s_species)
+    if species == other
+        println(s_species)
     end
+    @assert species != other
+    return SegmentData(
+        id,
+        species,
+        unwrap(parse(Segment, s_segment)),
+        unwrap(parse(SubType, s_subtype)),
+        isempty(clade) ? none(String) : some(String(clade)),
+        parse(Int16, s_year),
+        name,
+        ProteinORF[],
+        RefValue(none(LongDNASeq))
+    )
+end
 
-    segment_data
+function fill_orfs_extra_records!(records::Dict{String, SegmentData}, annotpath::String)
+    chunks = open(annotpath) do file
+        partition_chunks(GzipDecompressorStream(file))
+    end
+    for chunk in chunks
+        parse_annot_segment_data!(records, chunk)
+    end
+    records
 end
 
 # Please have a look at the files in annotation.tbl to understand this
@@ -464,17 +510,16 @@ function partition_chunks(io::IO)::Vector{Vector{String}}
     push!(chunks, chunk)
 end
 
-function parse_annot_segment_data(chunk::Vector{String})::SegmentData
+function parse_annot_segment_data!(records::Dict{String, SegmentData}, chunk::Vector{String})
     @assert startswith(first(chunk), ">Feature ")
     header = first(chunk)[10:end]
-    headerfields = split(header, '|')
-    subtype = unwrap(parse(SubType, headerfields[2]))
-    year = parse(Int16, last(split(first(headerfields), '/')))
-    segment = expect(parse(Segment, headerfields[3]), "Error on chunk $header")
-    proteins = ProteinORF[]
+    id = first(split(header, '|'))
+    @assert haskey(records, id)
+    data = records[id]
     orfs = UnitRange{UInt16}[]
     reading_cds = false
     for line in @view chunk[2:end]
+        isempty(strip(line)) && continue
         fields = split(line)
         if isnumeric(line[1]) && length(fields) > 2 && fields[3] == "CDS"
             reading_cds = true
@@ -485,11 +530,11 @@ function parse_annot_segment_data(chunk::Vector{String})::SegmentData
         if reading_cds && fields[1] == "gene"
             variant = expect(parse(Protein, fields[2]), "Error on chunk $header")
             reading_cds = false
-            push!(proteins, ProteinORF(variant, copy(orfs)))
+            push!(data.proteins, ProteinORF(variant, copy(orfs)))
             empty!(orfs)
         end
     end
-    SegmentData(none(String), human, segment, subtype, year, header, proteins, Ref(none(LongDNASeq)))
+    records
 end
 
 "Deduplicate all non-human seqs and add the human ones back"
@@ -507,10 +552,10 @@ function cd_hit_deduplicate(segment_data::Dict{String, SegmentData}
     println("Deduplicating sequences...")
     deduplicated = cd_hit_deduplicate(collect(values(nonhuman)), subdir)
 
-    # Add in the names (instead of GIs) of human seqs back and return deduplicated
+    # Add in the ids of human seqs back and return deduplicated
     for (key, data) in segment_data
         if data.host == human
-            push!(deduplicated[data.segment], data.name)
+            push!(deduplicated[data.segment], data.id)
         end
     end
 
@@ -522,7 +567,7 @@ function cd_hit_deduplicate(data::Vector{SegmentData}, dirname::String
     # Collect FASTAS by segment
     bysegment = Dict(s => FASTA.Record[] for s in instances(Segment))
     for segmentdata in data
-        record = FASTA.Record(unwrap(segmentdata.gi), unwrap(segmentdata.seq[]))
+        record = FASTA.Record(segmentdata.id, unwrap(segmentdata.seq[]))
         push!(bysegment[segmentdata.segment], record)
     end
 
@@ -580,8 +625,7 @@ function serialize_segments(segment_data::Dict{String, SegmentData},
         open(FASTA.Writer, fasta_path) do writer
             for accession in accessions
                 data = segment_data[accession]
-                header = data.host == human ? data.name : unwrap(data.gi)
-                record = FASTA.Record(header, unwrap(data.seq[]))
+                record = FASTA.Record(data.id, unwrap(data.seq[]))
                 write(writer, record)
             end
         end
