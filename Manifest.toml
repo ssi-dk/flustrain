@@ -18,8 +18,10 @@ uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
 uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
 
 [[Automa]]
-deps = ["DataStructures", "Printf", "Random", "Test", "TranscodingStreams"]
-git-tree-sha1 = "c81526bf5f6fb4616b4e22a3cd62ac20e255fd3c"
+deps = ["DataStructures", "Libdl", "Printf", "SIMD", "TranscodingStreams"]
+git-tree-sha1 = "b0a19928485a1c344a0184b01974976587472203"
+repo-rev = "simd"
+repo-url = "/Users/jakobnissen/code/Automa.jl"
 uuid = "67c07d97-cdcb-5c2c-af73-a7f9c32a568b"
 version = "0.8.0"
 
@@ -46,13 +48,13 @@ version = "0.1.0"
 
 [[BioSequences]]
 deps = ["BioGenerics", "BioSymbols", "Combinatorics", "IndexableBitVectors", "Printf", "Random", "StableRNGs", "Twiddle"]
-git-tree-sha1 = "093ccb9211bdc71924abf8e74a0790af11da35a7"
+path = "/Users/jakobnissen/code/BioSequences.jl/"
 uuid = "7e6ae17a-c86d-528c-b3b9-7f778a29fe59"
 version = "2.0.5"
 
 [[BioSymbols]]
 deps = ["Automa"]
-git-tree-sha1 = "ec77888ac3e78f9d372c2b533bdb52668f9e2b09"
+path = "/Users/jakobnissen/code/BioSymbols.jl"
 uuid = "3c28c6f8-a34d-59c4-9654-267d177fcfa9"
 version = "4.0.4"
 
@@ -61,9 +63,6 @@ deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
 git-tree-sha1 = "c3598e525718abcc440f69cc6d5f60dda0a1b61e"
 uuid = "6e34b625-4abd-537c-b88f-471c36dfa7a0"
 version = "1.0.6+5"
-
-[[CRC32c]]
-uuid = "8bf52ea8-c179-5cab-976a-9e18b702a9bc"
 
 [[Cairo_jll]]
 deps = ["Artifacts", "Bzip2_jll", "Fontconfig_jll", "FreeType2_jll", "Glib_jll", "JLLWrappers", "LZO_jll", "Libdl", "Pixman_jll", "Pkg", "Xorg_libXext_jll", "Xorg_libXrender_jll", "Zlib_jll", "libpng_jll"]
@@ -100,12 +99,6 @@ git-tree-sha1 = "08c8b6831dc00bfea825826be0bc8336fc369860"
 uuid = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"
 version = "1.0.2"
 
-[[Comonicon]]
-deps = ["CRC32c", "Configurations", "Crayons", "ExprTools", "Libdl", "Logging", "Markdown", "MatchCore", "PackageCompiler", "Pkg", "TOML"]
-git-tree-sha1 = "dbefb148a18fc468f2a8159c252a15165d4c0735"
-uuid = "863f3e99-da2a-4334-8734-de3dacbe5542"
-version = "0.10.2"
-
 [[Compat]]
 deps = ["Base64", "Dates", "DelimitedFiles", "Distributed", "InteractiveUtils", "LibGit2", "Libdl", "LinearAlgebra", "Markdown", "Mmap", "Pkg", "Printf", "REPL", "Random", "SHA", "Serialization", "SharedArrays", "Sockets", "SparseArrays", "Statistics", "Test", "UUIDs", "Unicode"]
 git-tree-sha1 = "919c7f3151e79ff196add81d7f4e45d91bbf420b"
@@ -121,12 +114,6 @@ git-tree-sha1 = "f3955eb38944e5dd0fabf8ca1e267d94941d34a5"
 uuid = "a33af91c-f02d-484b-be07-31d278c5ca2b"
 version = "0.1.0"
 
-[[Configurations]]
-deps = ["Crayons", "ExprTools", "MatchCore", "OrderedCollections", "TOML"]
-git-tree-sha1 = "84a19ac7a48245419990792df182025fc9216419"
-uuid = "5218b696-f38b-4ac9-8b61-a12ec717816d"
-version = "0.9.4"
-
 [[ConstructionBase]]
 deps = ["LinearAlgebra"]
 git-tree-sha1 = "48920211c95a6da1914a06c44ec94be70e84ffff"
@@ -138,11 +125,6 @@ deps = ["StaticArrays"]
 git-tree-sha1 = "9f02045d934dc030edad45944ea80dbd1f0ebea7"
 uuid = "d38c429a-6771-53c6-b99e-75d170b6e991"
 version = "0.5.7"
-
-[[Crayons]]
-git-tree-sha1 = "3f71217b538d7aaee0b69ab47d9b7724ca8afa0d"
-uuid = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
-version = "4.0.4"
 
 [[DataAPI]]
 git-tree-sha1 = "dfb3b7e89e395be1e25c2ad6d7690dc29cc53b1d"
@@ -199,14 +181,11 @@ git-tree-sha1 = "1402e52fcda25064f51c77a9655ce8680b76acf0"
 uuid = "2e619515-83b5-522b-bb60-26c02a35a201"
 version = "2.2.7+6"
 
-[[ExprTools]]
-git-tree-sha1 = "10407a39b87f29d47ebaca8edbc75d7c302ff93e"
-uuid = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
-version = "0.1.3"
-
 [[FASTX]]
 deps = ["Automa", "BioGenerics", "BioSequences", "BioSymbols", "TranscodingStreams"]
-git-tree-sha1 = "a980d6ac14c84c3ed17d0d07a0963a1c6d074b34"
+git-tree-sha1 = "94ca876f52b97dcecb4059fd8852326a71bce088"
+repo-rev = "simd"
+repo-url = "/Users/jakobnissen/code/FASTX.jl"
 uuid = "c2308a5c-f048-11e8-3e8a-31650f418d12"
 version = "1.1.3"
 
@@ -311,9 +290,7 @@ version = "1.0.0"
 
 [[Influenza]]
 deps = ["ErrorTypes", "SumTypes"]
-git-tree-sha1 = "de09e101eb530e65264316330d6b67e1c4bc1457"
-repo-rev = "master"
-repo-url = "/Users/jakobnissen/code/Influenza"
+path = "/Users/jakobnissen/code/Influenza"
 uuid = "75be95bb-60e3-4423-b8b7-0f2a09593d53"
 version = "0.1.0"
 
@@ -478,11 +455,6 @@ version = "0.5.6"
 deps = ["Base64"]
 uuid = "d6f4376e-aef5-505a-96c1-9c027394607a"
 
-[[MatchCore]]
-git-tree-sha1 = "c4b9f2f81cb7dbe22540df3a084de380f3cef6c4"
-uuid = "5dd3f0b1-72a9-48ad-ae6e-79f673da005f"
-version = "0.1.0"
-
 [[MbedTLS]]
 deps = ["Dates", "MbedTLS_jll", "Random", "Sockets"]
 git-tree-sha1 = "1c38e51c3d08ef2278062ebceade0e46cefc96fe"
@@ -639,6 +611,11 @@ version = "1.1.2"
 
 [[SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+
+[[SIMD]]
+git-tree-sha1 = "b2202f63f62d8c1214ed16c18319f72fa74adc4d"
+uuid = "fdea26ae-647d-5447-a871-4b548cad5224"
+version = "3.2.1"
 
 [[Scratch]]
 deps = ["Dates"]

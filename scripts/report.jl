@@ -326,8 +326,10 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
         # Only stop if we find a stop codon NOT in an intron
         if is_stop(codon) && iszero(length(nucleotides) % 3)
             if is_error(maybe_expected_stop)
+                n_aa = div(length(nucleotides), 3)
+                expected_aa = div(sum(protein.mask), 3)
                 push!(messages, ErrorMessage(is_critical(protein.var),
-                "$(protein.var) has an early stop at segment pos $seg_pos, after $(length(nucleotides)) nt."))
+                "$(protein.var) stops early, at pos $seg_pos, after $(n_aa) aa (ref is $(expected_aa) aa)."))
             else
                 expected_stop = unwrap(maybe_expected_stop)
                 if expected_stop != seg_pos
@@ -468,8 +470,8 @@ function push_report_lines!(lines::Vector{<:AbstractString}, segment, maybe_data
     push!(lines, beginning * " $depthstr $covstr $idstr")
 
     # Warning if coverage or identity is too low
-    coverage < 0.9 && (push!(lines, "\t\t ERROR: Coverage is less than 90%"); is_ok = false)
-    is_error(identity) || unwrap(identity) < 0.9 && (push!(lines, "\t\t ERROR: Identity is less than 90%"); is_ok = false)
+    coverage < 0.9 && (push!(lines, "\t\tERROR: Coverage is less than 90%"); is_ok = false)
+    is_error(identity) || unwrap(identity) < 0.9 && (push!(lines, "\t\tERROR: Identity is less than 90%"); is_ok = false)
 
     # Warning if identity b/w first and second assembly too low (asm not converged)
     if data.assembly_identity < 0.995

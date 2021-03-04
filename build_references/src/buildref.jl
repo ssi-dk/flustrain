@@ -11,6 +11,7 @@ using Serialization
 using Transducers
 using UnicodePlots
 using Influenza
+import Downloads
 
 using Base: RefValue
 
@@ -75,7 +76,7 @@ function download_influenza_data(;force=false)
         "influenza.fna.gz",
         "influenza_aa.dat.gz"
         ]
-        download(joinpath(ftp_address, filename), joinpath("download", filename))
+        Downloads.download(joinpath(ftp_address, filename), joinpath("download", filename))
         println("Downloaded $filename")
     end
 end
