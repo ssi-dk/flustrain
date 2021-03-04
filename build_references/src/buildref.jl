@@ -492,35 +492,29 @@ function parse_annot_segment_data(chunk::Vector{String})::SegmentData
     SegmentData(none(String), human, segment, subtype, year, header, proteins, Ref(none(LongDNASeq)))
 end
 
-"Obtain a set of accepted gi for avian and swine"
+"Deduplicate all non-human seqs and add the human ones back"
 function cd_hit_deduplicate(segment_data::Dict{String, SegmentData}
-)::Dict{Species, Dict{Segment, Set{String}}}
+)::Dict{Segment, Set{String}}
     @warn "Not deduplicating human sequences"
 
     subdir = joinpath("results", "cdhit")
     isdir(subdir) || mkdir(subdir)
 
-    byspecies = Dict(sp => SegmentData[] for sp in instances(Species))
-    for data in values(segment_data)
-        push!(byspecies[data.host], data)
+    nonhuman = filter(segment_data) do (key, data)
+        data.host != human
     end
 
-    result = Dict{Species, Dict{Segment, Set{String}}}()
-    for species in (swine, avian)
-        speciesdir = joinpath(subdir, string(species))
-        isdir(speciesdir) || mkdir(speciesdir)
-        println("Deduplicating $(string(species)) sequences...")
-        result[species] = cd_hit_deduplicate(byspecies[species], speciesdir)
+    println("Deduplicating sequences...")
+    deduplicated = cd_hit_deduplicate(collect(values(nonhuman)), subdir)
+
+    # Add in the names (instead of GIs) of human seqs back and return deduplicated
+    for (key, data) in segment_data
+        if data.host == human
+            push!(deduplicated[data.segment], data.name)
+        end
     end
 
-    # We simply add all human sequences here - no deduplication
-    human_dict = Dict(segment => Set{String}() for segment in instances(Segment))
-    result[human] = human_dict
-    for data in byspecies[human]
-        push!(human_dict[data.segment], data.name)
-    end
-
-    result
+    deduplicated
 end
 
 function cd_hit_deduplicate(data::Vector{SegmentData}, dirname::String
@@ -569,31 +563,26 @@ function run_cd_hit(paths::Vector{String})
 end
 
 function serialize_segments(segment_data::Dict{String, SegmentData},
-    deduplicated::Dict{Species, Dict{Segment, Set{String}}}
+    deduplicated::Dict{Segment, Set{String}}
 )
     serial_dir = joinpath("results/deduplicated")
     isdir(serial_dir) || mkdir(serial_dir)
 
-    for (species, segment_dict) in deduplicated
-        species_dir = joinpath(serial_dir, string(species))
-        isdir(species_dir) || mkdir(species_dir)
+    # Serialize the ORFs itself
+    for (segment, accessions) in deduplicated
+        jls_path = joinpath(serial_dir, string(segment) * ".jls")
+        serialize_orfs(segment_data, accessions, jls_path)
+    end
 
-        # Serialize the ORFs itself
-        for (segment, accessions) in segment_dict
-            jls_path = joinpath(species_dir, string(segment) * ".jls")
-            serialize_orfs(segment_data, accessions, jls_path) # TODO
-        end
-
-        # Write the deduplicated FASTA files
-        for (segment, accessions) in segment_dict
-            fasta_path = joinpath(species_dir, string(segment) * ".fna")
-            open(FASTA.Writer, fasta_path) do writer
-                for accession in accessions
-                    data = segment_data[accession]
-                    header = data.host == human ? data.name : unwrap(data.gi)
-                    record = FASTA.Record(header, unwrap(data.seq[]))
-                    write(writer, record)
-                end
+    # Write the deduplicated FASTA files
+    for (segment, accessions) in deduplicated
+        fasta_path = joinpath(serial_dir, string(segment) * ".fna")
+        open(FASTA.Writer, fasta_path) do writer
+            for accession in accessions
+                data = segment_data[accession]
+                header = data.host == human ? data.name : unwrap(data.gi)
+                record = FASTA.Record(header, unwrap(data.seq[]))
+                write(writer, record)
             end
         end
     end
