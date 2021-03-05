@@ -306,7 +306,7 @@ rule second_kma_map:
     threads: 2
     run:
         shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-        "-t {threads} -1t1 -gapopen -5 -nf -na 2> {log}")
+        "-t {threads} -1t1 -gapopen -5 -nf 2> {log}")
 
 checkpoint create_report:
     input:
@@ -363,14 +363,12 @@ rule iqtree:
     output: "phylogeny/{basename}/{segment,[A-Z0-9]+}.treefile"
     params:
         pre="phylogeny/{basename}/{segment}",
-        bootstrap=1000,
-        boot_iter=2500,
         model="HKY+G2",
         guide=REFOUTDIR + "/{segment}.treefile"
     threads: 2
     log: "log/iqtree/phylogeny/{basename}_{segment}.log"
     shell: "iqtree -s {input[0]} -pre {params.pre} -nt {threads} -m {params.model} "
-           "-nm {params.boot_iter} -bb {params.bootstrap} -g {params.guide} > {log}"
+           "-g {params.guide} > {log}"
 
 """
 rule cat_orfs:
