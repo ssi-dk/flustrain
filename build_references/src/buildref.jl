@@ -601,7 +601,7 @@ end
 
 function run_cd_hit(paths::Vector{String})
     Threads.@threads for path in paths
-        command = `bin/cd-hit-est -i $path -o $path.cdhit -aS 0.9 -c 0.95`
+        command = `bin/cd-hit-est -i $path -o $path.cdhit -aS 0.9 -c 0.95 -d 32`
         pipe = pipeline(command, stdout="$path.log")
         run(pipe)
     end

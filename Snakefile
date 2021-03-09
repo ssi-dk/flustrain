@@ -16,19 +16,18 @@ JULIA_COMMAND = f"julia --startup-file=no --project={SNAKEDIR} -J {SYSIMG_PATH}"
 if "readdir" not in config:
     raise KeyError("You must supply absolute read path: '--config readdir=/path/to/reads'")
 
+READDIR = config["readdir"]
+
 if "refset" not in config:
     raise KeyError("You must supply name of reference set: '--config refset=swine'")
 
 if config["refset"] not in ["human", "swine", "avian"]:
     raise KeyError("refset must be 'human', 'swine' or 'avian'")
 
-READDIR = config["readdir"]
-
 # For some reason it all fucks up if the read directory is a child of the running
 # directory, so we check that here.
-_dir = READDIR
-root = os.path.abspath(".").split(os.path.sep)[0]
-while _dir != root:
+_dir = os.path.abspath(READDIR)
+while _dir != os.path.dirname(_dir):
     if _dir == os.getcwd():
         raise ValueError("Error: Read path cannot be child directory of running directory")
     _dir = os.path.dirname(_dir)
@@ -36,25 +35,27 @@ while _dir != root:
 READ_PAIRS = tools.get_read_pairs(READDIR)
 BASENAMES = sorted(READ_PAIRS.keys())
 
-REFDIR = os.path.join(SNAKEDIR, "ref", config["refset"])
-if not os.path.isdir(REFDIR):
-    raise NotADirectoryError(f"Could not find reference directory: '{REFDIR}'")
+REFSEQDIR = os.path.join(SNAKEDIR, "ref", "seqs")
+REFTREEDIR = os.path.join(SNAKEDIR, "ref", "trees", config["refset"])
+for path in REFSEQDIR, REFTREEDIR:
+    if not os.path.isdir(path):
+        raise NotADirectoryError(f"Could not find reference directory: '{path}'")
 
-REFOUTDIR = os.path.join(SNAKEDIR, "refout", config["refset"])
+REFOUTDIR = os.path.join(SNAKEDIR, "refout")
+REFOUTTREEDIR = os.path.join(REFOUTDIR, config["refset"])
 
 # We have to create these directories either in a rule or outside the DAG to not
 # mess up the DAG.
-if not os.path.isdir(os.path.join(SNAKEDIR, "refout")):
-    os.mkdir(os.path.join(SNAKEDIR, "refout"))
+for path in [REFOUTDIR, REFOUTTREEDIR]:
+    if not os.path.isdir(path):
+        os.mkdir(path)
 
-if not os.path.isdir(os.path.join(SNAKEDIR, "refout", config["refset"])):
-    os.mkdir(os.path.join(SNAKEDIR, "refout", config["refset"]))
+SEGMENTS = sorted([fn.rpartition('.')[0] for fn in os.listdir(REFSEQDIR) if fn.endswith(".fna")])
 
-SEGMENTS = sorted([fn.rpartition('.')[0] for fn in os.listdir(REFDIR) if fn.endswith(".fna")])
+TREE_SEGMENTS = [fn.partition(".")[0] for fn in os.listdir(REFTREEDIR)]
 
-TREE_SEGMENTS = [fn.partition(".")[0] for fn in os.listdir(os.path.join(REFDIR, "trees"))]
 if not set(TREE_SEGMENTS).issubset(set(SEGMENTS)):
-    raise ValueError(f"Tree segment name in {REFDIR} must be subset of segment names.")
+    raise ValueError(f"Tree segment name in {REFTREEDIR} must be subset of segment names.")
 
 ######################################################
 # Start of pipeline
@@ -141,7 +142,7 @@ rule extract_orf:
 # REFERENCE-ONLY PART OF PIPELINE
 #################################
 rule index_ref:
-    input: REFDIR + "/{segment}.fna"
+    input: REFSEQDIR + "/{segment}.fna"
     output:
         comp=REFOUTDIR + "/{segment,[a-zA-Z0-9]+}.comp.b",
         name=REFOUTDIR + "/{segment,[a-zA-Z0-9]+}.name",
@@ -151,23 +152,20 @@ rule index_ref:
         outpath=REFOUTDIR + "/{segment}",
     log: "log/kma_ref/{segment}.log"
     
-    # The pipeline is very sensitive to the value of k here.
-    # Too low means the mapping is excruciatingly slow,
-    # too high results in very poor mapping quality.
     shell: "kma index -k 12 -Sparse - -i {input} -o {params.outpath} 2> {log}"
 
 rule align_references:
-    input: REFDIR + "/{segment}.fna"
-    output: REFOUTDIR + "/{segment}.aln.fna"
+    input: REFTREEDIR + "/{segment}.fna"
+    output: REFOUTTREEDIR + "/{segment}.aln.fna"
     threads: 4
     log: "log/align_ref/{segment}.log"
     shell: "mafft --thread {threads} --auto {input} > {output} 2> {log}"
 
 rule reference_iqtree:
-    input: REFOUTDIR + "/{segment}.aln.trimmed.fna"
-    output: REFOUTDIR + "/{segment}.treefile"
+    input: REFOUTTREEDIR + "/{segment}.aln.trimmed.fna"
+    output: REFOUTTREEDIR + "/{segment}.treefile"
     params:
-        pre=REFOUTDIR + "/{segment}",
+        pre=REFOUTTREEDIR + "/{segment}",
         model="HKY+G2" # just pick a model to be consistent
     threads: 2
     log: "log/iqtree/{segment}.log"
@@ -222,7 +220,7 @@ rule collect_best_templates:
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/gather_spa.jl",
-        refpath=REFDIR
+        refpath=REFSEQDIR
     shell: "julia {params.scriptpath} aln {params.refpath}"
 
 rule first_kma_index:
@@ -235,7 +233,11 @@ rule first_kma_index:
     params:
         t_db="aln/{basename}/cat"
     log: "log/aln/kma1_index_{basename}.log"
-    shell: "kma index -k 12 -i {input} -o {params.t_db} 2> {log}"
+    # The pipeline is very sensitive to the value of k here.
+    # Too low means the mapping is excruciatingly slow,
+    # too high results in poor mapping quality.
+    # k = 10 might be a little on the low side.
+    shell: "kma index -k 10 -i {input} -o {params.t_db} 2> {log}"
 
 rule first_kma_map:
     input:
@@ -321,7 +323,7 @@ checkpoint create_report:
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/report.jl",
-        refdir=REFDIR
+        refdir=REFSEQDIR
     log: "log/report.txt"
     threads: workflow.cores
     run:
@@ -351,7 +353,7 @@ rule extract_phylogeny_seq:
 rule cat_ref_consensus:
     input:
         consensus="phylogeny/{basename}/{segment}.fna",
-        refaln=REFOUTDIR + "/{segment}.aln.trimmed.fna"
+        refaln=REFOUTTREEDIR + "/{segment}.aln.trimmed.fna"
     output: temp("phylogeny/{basename}/{segment}.cat.aln.trimmed.fna")
     log: "log/mafft/phylogeny/{basename}_{segment}.log"
     run: shell("mafft --add {input.consensus} {input.refaln} > {output} 2> {log}")
@@ -364,7 +366,7 @@ rule iqtree:
     params:
         pre="phylogeny/{basename}/{segment}",
         model="HKY+G2",
-        guide=REFOUTDIR + "/{segment}.treefile"
+        guide=REFOUTTREEDIR + "/{segment}.treefile"
     threads: 2
     log: "log/iqtree/phylogeny/{basename}_{segment}.log"
     shell: "iqtree -s {input[0]} -pre {params.pre} -nt {threads} -m {params.model} "

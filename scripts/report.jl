@@ -61,6 +61,7 @@ struct ORFData
     variant::Protein
     seq::LongDNASeq
     aaseq::LongAminoAcidSeq
+    orfs::Vector{UnitRange{UInt16}}
     identity::Option{Float64}
     errors::Vector{ErrorMessage}
     # indel errors are special because if there are 50 of them, we don't display them all
@@ -277,13 +278,29 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
     maybe_expected_stop = none(Int)
     # indel messages are special because we choose to skip if there are too many
     messages, indel_messages = ErrorMessage[], ErrorMessage[]
+    orfs = UnitRange{UInt16}[]
+    orfstart = nothing
     for (seg_nt, ref_nt) in aln
         seg_pos += (seg_nt !== DNA_Gap)
         ref_pos += (ref_nt !== DNA_Gap)
         is_coding = protein.mask[ref_pos]
 
-        # If we're in an intron, don't do anything
-        !is_coding & (ref_pos < last_ref_pos) && continue
+        if is_coding
+            if (orfstart === nothing) & (seg_nt !== DNA_Gap)
+                orfstart = seg_pos
+            end
+        else
+            if orfstart !== nothing
+                push!(orfs, UInt16(orfstart):UInt16(seg_pos - 1))
+                orfstart = nothing
+
+            end
+            
+            # If we're in an intron, don't do anything
+            if ref_pos < last_ref_pos
+                continue
+            end
+        end
 
         # Check for deletions
         if seg_nt == DNA_Gap
@@ -342,6 +359,10 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
         end
     end
 
+    if orfstart !== nothing
+        push!(orfs, UInt16(orfstart):UInt16(seg_pos))
+    end
+
     dnaseq = LongDNASeq(nucleotides)
     # Is seq length divisible by three?
     remnant = length(dnaseq) % 3
@@ -359,19 +380,19 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
         dnaseq = dnaseq[1:end-3]
     end
 
-    return dnaseq, messages, indel_messages
+    return dnaseq, orfs, messages, indel_messages
 end
 
 function ORFData(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, LongDNASeq},
     ref::Reference)
-    orfseq, messages, indel_messages = gather_aln(protein, aln)
+    orfseq, orfs, messages, indel_messages = gather_aln(protein, aln)
     aaseq = BioSequences.translate(orfseq)
     ref_aas = (i for (i,n) in zip(ref.seq, protein.mask) if n)
     # Last 3 nts are the stop codon
     refaa = BioSequences.translate(LongDNASeq(collect(ref_aas)[1:end-3]))
     aaaln = pairalign(GlobalAlignment(), aaseq, refaa, AA_ALN_MODEL).aln
     identity = get_identity(aaaln)
-    ORFData(protein.var, orfseq, aaseq, identity, messages, indel_messages)
+    ORFData(protein.var, orfseq, aaseq, orfs, identity, messages, indel_messages)
 end
 
 # This function gets the identity between a segment and its reference
@@ -612,7 +633,9 @@ function main(outdir::AbstractString, reportpath::AbstractString, depthsdir::Abs
                     !ok && curated && continue
                     data = (@unwrap_or maybe_data continue)::SegmentData
                     for orfdata in data.orfdata
-                        write(writer, FASTA.Record(basename * '_' * string(orfdata.variant), orfdata.aaseq))
+                        header = basename * '_' * string(orfdata.variant)
+                        header *= '_' * join([string(first(i)) * '-' * string(last(i)) for i in orfdata.orfs], ',')
+                        write(writer, FASTA.Record(header, orfdata.aaseq))
                     end
                 end
             end
