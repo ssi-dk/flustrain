@@ -1,6 +1,5 @@
 import sys
 import os
-import itertools as it
 
 SNAKEDIR = os.path.dirname(workflow.snakefile)
 sys.path.append(os.path.join(SNAKEDIR, "scripts"))
