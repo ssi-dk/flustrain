@@ -8,12 +8,12 @@ using ErrorTypes
 using Influenza
 using Printf
 using Serialization
+using Transducers
+using Folds
 using Plots
 
-imap(f) = x -> Iterators.map(f, x)
-ifilter(f) = x -> Iterators.filter(f, x)
-
 const SegmentTuple{T} = NTuple{length(instances(Segment)), T}
+const TERMINAL = 25
 
 function split!(v::Vector{SubString{String}}, s::Union{String, SubString{String}}, sep::UInt8)
     n = 0
@@ -31,15 +31,30 @@ function split!(v::Vector{SubString{String}}, s::Union{String, SubString{String}
     v
 end
 
-@enum Severity::UInt8 trivial important critical
+@enum Severity::UInt8 trivial important
 
 struct ErrorMessage
     severity::Severity
     msg::String
 end
 
+is_trivial(x::ErrorMessage) = x.severity == trivial
+
+function format(msg::ErrorMessage)
+    preface = msg.severity == trivial ? "         " :
+                                        "ERROR:   "
+    preface * msg.msg
+end
+
 const _IMPORTANT = Tuple(Bool[1,1,0,0,1,0,1,1,1,1,1,1,1,0,1,1,1])
 @assert length(_IMPORTANT) == length(instances(Protein))
 is_important(x::Protein) = @inbounds _IMPORTANT[reinterpret(UInt8, x) + 0x01]
+
+include("assembly.jl")
+include("depths.jl")
+include("reference.jl")
+
+include("alignment.jl")
+include("report.jl")
 
 end # module

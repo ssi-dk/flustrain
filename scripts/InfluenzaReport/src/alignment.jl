@@ -5,21 +5,19 @@ struct ORFData
     orfs::Vector{UnitRange{UInt16}}
     identity::Option{Float64}
     errors::Vector{ErrorMessage}
-    # indel errors are special because if there are 50 of them, we don't display them all
-    indel_errors::Vector{ErrorMessage}
 end
 
 function ORFData(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, LongDNASeq},
     ref::Reference
 )
-    orfseq, orfs, messages, indel_messages = gather_aln(protein, aln)
+    orfseq, orfs, messages = gather_aln(protein, aln)
     aaseq = BioSequences.translate(orfseq)
     ref_aas = (i for (i,n) in zip(ref.seq, protein.mask) if n)
     # Last 3 nts are the stop codon
     refaa = BioSequences.translate(LongDNASeq(collect(ref_aas)[1:end-3]))
     aaaln = pairalign(GlobalAlignment(), aaseq, refaa, AA_ALN_MODEL).aln
     identity = get_identity(aaaln)
-    ORFData(protein.var, orfseq, aaseq, orfs, identity, messages, indel_messages)
+    ORFData(protein.var, orfseq, aaseq, orfs, identity, messages)
 end
 
 const ALN_MODEL = AffineGapScoreModel(EDNAFULL, gap_open=-25, gap_extend=-2)
@@ -78,7 +76,7 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
                     push!(indel_messages, ErrorMessage(is_important(protein.var) ? important : trivial,
                         "$(protein.var) frameshift deletion of $n_deletions bases b/w bases $(seg_pos-1)-$(seg_pos)"))
                 else
-                    push!(indel_messages, ErrorMessage(false,
+                    push!(indel_messages, ErrorMessage(trivial,
                         "$(protein.var) deletion of $n_deletions bases b/w bases $(seg_pos-1)-$(seg_pos)"))
                 end
                 n_deletions = 0
@@ -145,5 +143,38 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
         dnaseq = dnaseq[1:end-3]
     end
 
-    return dnaseq, orfs, messages, indel_messages
+    # Merge indel_msg and messages here
+    # If there are too many indel messages, we collapse them
+    if length(indel_messages) > 4
+        push!(messages, ErrorMessage(is_important(protein.var) ? important : trivial,
+            "Numerous (>4) indels in $(protein.var)"))
+    else
+        append!(messages, indel_messages)
+    end
+
+    return dnaseq, orfs, messages
+end
+
+# This function gets the identity between a segment and its reference
+function get_identity(aln::PairwiseAlignment{T, T})::Option{Float64} where {T <: BioSequence}
+    iszero(length(aln)) && return none
+
+    gapval = gap(eltype(T))
+    seq, ref = fill(gapval, length(aln)), fill(gapval, length(aln))
+    for (i, (seqnt, refnt)) in enumerate(aln)
+        seq[i] = seqnt
+        ref[i] = refnt
+    end
+
+    # This can sometimes happen if e.g. there is no called sequence
+    # in the supposed amino acid sequence.
+    (all(isgap, seq) || all(isgap, ref)) && return none
+
+    start = max(findfirst(!isgap, seq), findfirst(!isgap, ref))
+    stop = min(findlast(!isgap, seq), findlast(!isgap, ref))
+    id = count(zip(view(seq, start:stop), view(ref, start:stop))) do pair
+        first(pair) === last(pair)
+    end / length(start:stop)
+
+    return some(id)
 end

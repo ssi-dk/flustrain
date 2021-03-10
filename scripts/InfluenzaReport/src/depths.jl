@@ -2,6 +2,32 @@ struct Depths
     depths::Vector{UInt32}
 end
 
+function error_report(maybe_depths::Option{Depths})::Option{Tuple{String, Vector{ErrorMessage}}}
+    depths = @? maybe_depths
+    if length(depths.depths) < 2*TERMINAL+1
+        return ("ERROR: DEPTHS TOO SHORT", ErrorMessage[])
+    end
+    mean_depth = sum(UInt, depths.depths) / length(depths.depths)
+    coverage = count(!iszero, depths.depths) / length(depths.depths)
+    header = "depth $(@sprintf "%.2e" mean_depth) coverage $(@sprintf "%.3f" coverage)"
+    
+    messages = ErrorMessage[]
+    
+    # Low coverage
+    if coverage < 0.9 &&
+        push!(messages, ErrorMessage(important, "Coverage is less than 90%"))
+    end
+
+    # Low depth
+    lowdepth = count(x -> x < 25, @view depths.depths[TERMINAL + 1: end - TERMINAL])
+    if !iszero(lowdepth)
+        severity = lowdepth > 4 ? important : trivial
+        push!(messages, ErrorMessage(severity, "$lowdepth central bases with depth < 25"))
+    end
+
+    some((header, messages))
+end
+
 "Given a path to a .mat.gz file, return a dict of an optional vec of depths"
 function from_mat(matpath::AbstractString)::SegmentTuple{Option{Depths}}
     open(matpath) do io

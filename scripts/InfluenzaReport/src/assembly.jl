@@ -1,4 +1,5 @@
 struct Assembly
+    segment::Segment
     insignificant::BitVector
     seq::LongDNASeq
     accession::String
@@ -28,7 +29,7 @@ function load_assembly(assemblypath::AbstractString, kma::Bool)::SegmentTuple{Op
                 insignificant = falses(length(record.sequence))
             end
             is_error(result[segment_index]) || error("Segment $segment present twice in $assemblypath")
-            result[segment_index] = some(Assembly(insignificant, seq, accession))
+            result[segment_index] = some(Assembly(segment, insignificant, seq, accession))
         end
         SegmentTuple(result)
     end

@@ -5,6 +5,7 @@ struct ProteinORF
 end
 
 struct Reference
+    segment::Segment
     seq::LongDNASeq
     proteins::Vector{ProteinORF}
 end
@@ -44,7 +45,7 @@ function load_references(references::Set{Tuple{Segment, String}}, refdir::Abstra
                         error("Accession $accession missing from $seqpath")
                     end
                     seq = seqof[accession]
-                    reference = Reference(seq, ProteinORF[])
+                    reference = Reference(segment, seq, ProteinORF[])
                     result[(segment, accession)] = reference
                     for (var_uint8, orf_tuple) in v
                         mask = falses(length(seq))
@@ -65,4 +66,29 @@ function load_references(references::Set{Tuple{Segment, String}}, refdir::Abstra
         end
     end
     result
+end
+
+function load_references(
+    maybe_asm_tuples::Vector{SegmentTuple{Option{Assembly}}},
+    refdir::AbstractString
+)::Vector{SegmentTuple{Option{Reference}}}
+    # Create (asm => (segment, string)) dict
+    accession_map::Dict{Assembly, Tuple{Segment, String}} = maybe_asm_tuples |>
+    Cat() ⨟
+    Filter(!is_error) ⨟
+    Map() do maybe_asm
+        asm = unwrap(maybe_asm)
+        asm => (asm.segment, asm.accession)
+    end |> Dict
+
+    reference_map::Dict{Tuple{Segment, String}, Reference} = 
+        load_references(Set(values(accession_map)), refdir)
+
+    maybe_asm_tuples |> Map() do asm_tuple
+        map(asm_tuple) do maybe_asm
+            and_then(Reference, maybe_asm) do asm
+                reference_map[(asm.segment, asm.accession)]
+            end
+        end
+    end |> collect
 end
