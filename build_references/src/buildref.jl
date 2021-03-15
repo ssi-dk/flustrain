@@ -451,7 +451,7 @@ function get_extra_records(fastapath::String)
             read!(reader, record)
             data = parse_data_from_header(FASTA.header(record)::String)
             data.seq[] = some(FASTA.sequence(LongDNASeq, record))
-            @assert !haskey(records, data.id)
+            @assert !haskey(records, data.id) "Duplicate key $(data.id)"
             records[data.id] = data
         end
     end
