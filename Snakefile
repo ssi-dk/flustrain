@@ -8,7 +8,7 @@ import tools
 
 # We only need this because Julia 1.6 segfaults with PkgCompiler at the moment
 SYSIMG_PATH = os.path.join(SNAKEDIR, "scripts", "sysimg", "sysimg.so")
-JULIA_COMMAND = f"julia --startup-file=no --project={SNAKEDIR} -J {SYSIMG_PATH}"
+JULIA_COMMAND = f"julia --startup-file=no --project={SNAKEDIR}"
 
 ######################################################
 # GLOBAL CONSTANTS
