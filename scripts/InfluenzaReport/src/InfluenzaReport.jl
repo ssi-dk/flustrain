@@ -1,3 +1,10 @@
+"""
+    InfluenzaReport
+
+This package is the Julia-side (backend) of the flupipe Snakemake pipeline.
+It's purpose is to be *application-specific* to the flupipe, NOT to include
+generally useful functions. For those, see `Influenza.`
+"""
 module InfluenzaReport
 
 using FASTX
@@ -57,5 +64,27 @@ include("reference.jl")
 
 include("alignment.jl")
 include("report.jl")
+
+
+# Actually call the stuff here (else, we import "interactive.jl")
+if abspath(PROGRAM_FILE) == @__FILE__
+    # TODO: Add GridIon functionality
+    if length(ARGS) != 2
+        println("Usage: julia InfluenzaReport.jl out_dir ref_dir")
+        exit(1)
+    end
+
+    outdir = first(ARGS)
+    refdir = last(ARGS)
+
+    reportpath = joinpath(outdir, "report.txt")
+    alndir = joinpath(outdir, "aln")
+    consdir = joinpath(outdir, "consensus")
+    plotdir = joinpath(outdir, "depths")
+
+    illumina_snakemake_entrypoint(reportpath, refdir, alndir, consdir, plotdir)
+else
+    include("interactive.jl")
+end
 
 end # module

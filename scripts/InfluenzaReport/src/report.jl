@@ -15,8 +15,8 @@ function ReferenceAssembly(ref::Reference, asm::Assembly)
     @assert ref.segment == asm.segment
 
     # For optimization: The large majority of time is spent on this alignment
-    aln = pairalign(OverlapAlignment(), asm.seq, ref.seq, ALN_MODEL).aln
-    identity = unwrap(get_identity(aln))
+    aln = pairalign(OverlapAlignment(), asm.seq, ref.seq, DEFAULT_DNA_ALN_MODEL).aln
+    identity = unwrap(alignment_identity(aln))
     orfdata = map(ref.proteins) do protein
         ORFData(protein, aln, ref)
     end
@@ -189,7 +189,7 @@ function illumina_snakemake_entrypoint(
     aln_dir::AbstractString, # dir of medaka / kma aln
     cons_dir::AbstractString,
     depths_plot_dir::AbstractString
-)
+)::Nothing
     basenames = sort!(readdir(aln_dir))
 
     # Load assemblies
@@ -217,7 +217,7 @@ function illumina_snakemake_entrypoint(
     mkdir(depths_plot_dir)
     for (basename, dict_tuple) in zip(basenames, extras)
         depths = from_mat(joinpath(aln_dir, basename, "kma1.mat.gz"))
-        #plot_depths(joinpath(depths_plot_dir, basename * ".pdf"), depths)
+        plot_depths(joinpath(depths_plot_dir, basename * ".pdf"), depths)
 
         for (dict, maybe_depth) in zip(dict_tuple, depths)
             if !is_error(maybe_depth)

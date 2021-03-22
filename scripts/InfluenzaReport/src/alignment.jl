@@ -24,13 +24,10 @@ function ORFData(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, LongDNA
     ref_aas = (i for (i,n) in zip(ref.seq, protein.mask) if n)
     # Last 3 nts are the stop codon
     refaa = BioSequences.translate(LongDNASeq(collect(ref_aas)[1:end-3]))
-    aaaln = pairalign(GlobalAlignment(), aaseq, refaa, AA_ALN_MODEL).aln
-    identity = get_identity(aaaln)
+    aaaln = pairalign(GlobalAlignment(), aaseq, refaa, DEFAULT_AA_ALN_MODEL).aln
+    identity = alignment_identity(aaaln)
     ORFData(protein.var, orfseq, aaseq, orfs, identity, messages)
 end
-
-const ALN_MODEL = AffineGapScoreModel(EDNAFULL, gap_open=-25, gap_extend=-2)
-const AA_ALN_MODEL = AffineGapScoreModel(BLOSUM62, gap_open=-10, gap_extend=-2)
 
 is_stop(x::DNACodon) = (x === mer"TAA") | (x === mer"TAG") | (x === mer"TGA")
 
@@ -170,28 +167,4 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
     end
 
     return dnaseq, orfs, messages
-end
-
-# This function gets the identity between a segment and its reference
-function get_identity(aln::PairwiseAlignment{T, T})::Option{Float64} where {T <: BioSequence}
-    iszero(length(aln)) && return none
-
-    gapval = gap(eltype(T))
-    seq, ref = fill(gapval, length(aln)), fill(gapval, length(aln))
-    for (i, (seqnt, refnt)) in enumerate(aln)
-        seq[i] = seqnt
-        ref[i] = refnt
-    end
-
-    # This can sometimes happen if e.g. there is no called sequence
-    # in the supposed amino acid sequence.
-    (all(isgap, seq) || all(isgap, ref)) && return none
-
-    start = max(findfirst(!isgap, seq), findfirst(!isgap, ref))
-    stop = min(findlast(!isgap, seq), findlast(!isgap, ref))
-    id = count(zip(view(seq, start:stop), view(ref, start:stop))) do pair
-        first(pair) === last(pair)
-    end / length(start:stop)
-
-    return some(id)
 end
