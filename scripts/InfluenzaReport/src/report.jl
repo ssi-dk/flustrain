@@ -1,22 +1,3 @@
-# Here, we load template identities from kma2.res. If a template has <99.5% identity,
-# it means the first assembly did not converge.
-function load_kma_file(resfilename::AbstractString)::SegmentTuple{Option{Float64}}
-    open(resfilename) do io
-        fields = Vector{SubString{String}}(undef, 11)
-        lines = eachline(io)
-        header, _ = iterate(lines)::NTuple{2, Any}
-        result = fill(none(Float64), length(instances(Segment)))
-        @assert header == "#Template\tScore\tExpected\tTemplate_length\tTemplate_Identity\tTemplate_Coverage\tQuery_Identity\tQuery_Coverage\tDepth\tq_value\tp_value"
-        for fields in lines |> Map(strip) ⨟ Filter(!isempty) ⨟ Map(x -> split!(fields, line, UInt8('\t')))
-            segment = unwrap(parse(Segment, strip(last(rsplit(first(fields), '_', limit=2)))))
-            segment_index = reinterpret(UInt8, segment) + 0x01
-            is_error(result[segment_index]) || error("Segment $(string(segment)) present twice in file $resfilename")
-            result[segment_index] = some(parse(Float64, fields[5]) / 100)
-        end
-        SegmentTuple(result)
-    end
-end
-
 # Combine assembly and reference to a single object
 struct ReferenceAssembly
     segment::Segment
@@ -27,10 +8,13 @@ struct ReferenceAssembly
     aln_id::Float64
     orfdata::Vector{ORFData}
     messages::Vector{ErrorMessage}
+    passed::Base.RefValue{Option{Bool}} # this is set at quality control
 end
 
 function ReferenceAssembly(ref::Reference, asm::Assembly)
     @assert ref.segment == asm.segment
+
+    # For optimization: The large majority of time is spent on this alignment
     aln = pairalign(OverlapAlignment(), asm.seq, ref.seq, ALN_MODEL).aln
     identity = unwrap(get_identity(aln))
     orfdata = map(ref.proteins) do protein
@@ -41,7 +25,7 @@ function ReferenceAssembly(ref::Reference, asm::Assembly)
     messages = ErrorMessage[]
     
     # Low identity to reference
-    identity < 0.9 && push!(messages, ErrorMessage(important, "Identity less than 90%"))
+    identity < 0.9 && push!(messages, ErrorMessage(important, "Identity to reference less than 90%"))
 
     # Insignificant bases
     n_insignificant = count(asm.insignificant)
@@ -58,24 +42,37 @@ function ReferenceAssembly(ref::Reference, asm::Assembly)
     end
 
     ReferenceAssembly(asm.segment, ref.seq, asm.seq, asm.insignificant, aln,
-        identity, orfdata, messages)
+        identity, orfdata, messages, Ref(none(Bool)))
 end
 
-# To do: Add other error messages from e.g. depths
+"This creates a FASTA record with lowercase letters on uncertain positions"
+function asm_dna_record(x::ReferenceAssembly, header::String)
+    record = FASTA.Record(header, x.asmseq)
+    data = record.data
+    @assert length(record.sequence) == length(x.insignificant)
+    for (i, (isbad, seqpos)) in enumerate(zip(x.insignificant, record.sequence))
+        if isbad
+            data[i] += 0x20 # this sets it to lowercase for ASCII
+        end
+    end
+    return record
+end
+
 function segment_report_lines(segment::Segment, maybe_refasm::Option{ReferenceAssembly},
-    extra::NamedTuple{S, <:Tuple{Vararg{<:Option}}} where S
-)::Tuple{Bool, Vector{String}}
+    extra::AbstractDict{String, Any}
+)::Vector{String}
     beginning = rpad(string(segment) * ":", 4)
 
     # Check for presence
     if is_error(maybe_refasm)
-        return (false, [beginning * " ERROR: Missing segment"])
+        return ["FAIL " * beginning * " ERROR: Missing segment"]
     end
     refasm = unwrap(maybe_refasm)
 
     # Check segment length and return early if way too short
     if length(refasm.asmseq) < 2 * TERMINAL + 1
-        return (false, [beginning * " ERROR: Sequence or depths length: $(length(efasm.asmseq))"])
+        refasm.passed[] = some(false)
+        return [beginning * " ERROR: Sequence or depths length: $(length(efasm.asmseq))"]
     end
     
     # Add identity to the header line
@@ -85,16 +82,16 @@ function segment_report_lines(segment::Segment, maybe_refasm::Option{ReferenceAs
     # Depths contains Option{Tuple{String, Vector{ErrorMessage}}}, where the initial
     # string should be added to the header line.
     # We also put it up top, just because it's here anyway
-    if haskey(extra, :depths) && !is_error(extra.depths)
-        (depths_str::String, errs::Vector{ErrorMessage}) = unwrap(extra.depths)
+    if haskey(extra, "depths")
+        (depths_str, errors) = error_report(extra["depths"])
         lines[1] *= (' ' * depths_str)
-        for message in errs
+        for message in errors
             push!(lines, format(message))
             is_ok &= is_trivial(message)
         end
     end
 
-    # Add own messages
+    # Add own messages from the ReferenceAssembly itself
     for message in refasm.messages
         push!(lines, format(message))
         is_ok &= is_trivial(message)
@@ -106,37 +103,83 @@ function segment_report_lines(segment::Segment, maybe_refasm::Option{ReferenceAs
         is_ok &= is_trivial(message)
     end
 
-    # Now add all the rest.
-    for (symbol, maybe_msgs) in pairs(extra)
-        symbol == :depths && continue
-        msgs = @unwrap_or maybe_msgs continue
-        for msg in msgs
-            push!(lines, format(msg))
+    # Now add all the rest (extra checks and data)
+    for (name, messages) in extra
+        name == "depths" && continue
+        for message in messages
+            push!(lines, format(message))
             is_ok &= is_trivial(message)
         end
     end
- 
-    return (is_ok, lines)
+
+    # Finally, we add the OK status to header of lines
+    lines[1] = (is_ok ? "     " : "FAIL ") * lines[1]
+    refasm.passed[] = some(is_ok)
+    return lines
 end
 
 function basename_report_lines(
     maybe_refasm_tuple::SegmentTuple{Option{ReferenceAssembly}},
-    extra_tuple::SegmentTuple{NamedTuple},
-)::Tuple{SegmentTuple{Bool}, SegmentTuple{Vector{String}}}
-    is_oks = Bool[]
-    line_vecs = Vector{String}[]
-    for (maybe_refasm, extra) in zip(maybe_refasm_tuple, extra_tuple)
-        is_ok, lines = segment_report_lines(maybe_refasm, extra)
+    extra_tuple::SegmentTuple{<:AbstractDict},
+)::SegmentTuple{Vector{String}}
+    result = Vector{Vector{String}}()
+    for (segment, maybe_refasm, extra) in zip(instances(Segment), maybe_refasm_tuple, extra_tuple)
+        lines = segment_report_lines(segment, maybe_refasm, extra)
 
         # Indent all lines except first
         for i in 2:lastindex(lines)
             lines[i] = '\t' * lines[i]
         end
 
-        push!(is_oks, is_ok)
-        push!(line_vecs, lines)
+        push!(result, lines)
     end
-    (SegmentTuple(is_oks), SegmentTuple(line_vecs))
+    return SegmentTuple(result)
+end
+
+function write_report(io::IO, basenames::Vector{<:AbstractString},
+    basename_reports::Vector{SegmentTuple{Vector{String}}}
+)
+    for (basename, reports) in zip(basenames, basename_reports)
+        println(io, basename)
+        for lines in reports
+            for line in lines
+                println(io, '\t', line)
+            end
+        end
+        print(io, '\n')
+    end
+end
+
+function write_consensus(dirname::String, basenames::Vector{String},
+    maybe_refasm_tuples::Vector{SegmentTuple{Option{ReferenceAssembly}}}
+)
+    mkdir(dirname)
+    for (basename, maybe_refasm_tuple) in zip(basenames, maybe_refasm_tuples)
+        subdir = joinpath(dirname, basename)
+        mkdir(subdir)
+        cons_dna_writer = open(FASTA.Writer, joinpath(subdir, "consensus.fna"))
+        cons_aa_writer = open(FASTA.Writer, joinpath(subdir, "consensus.faa"))
+        cura_dna_writer = open(FASTA.Writer, joinpath(subdir, "curated.fna"))
+        cura_aa_writer = open(FASTA.Writer, joinpath(subdir, "curated.faa"))
+        for maybe_refasm in maybe_refasm_tuple
+            refasm = @unwrap_or maybe_refasm continue
+            is_ok = unwrap(refasm.passed[])
+            dna_record = asm_dna_record(refasm, basename * '_' * string(refasm.segment))
+            write(cons_dna_writer, dna_record)
+            is_ok && write(cura_dna_writer, dna_record)
+            for orfdata in refasm.orfdata
+                header = basename * '_' * string(orfdata.variant) * '_'
+                header *= join(["$(first(i))-$(last(i))" for i in orfdata.orfs], ',')
+                record = FASTA.Record(header, orfdata.aaseq)
+                write(cons_aa_writer, record)
+                is_ok && write(cura_aa_writer, record)
+            end
+        end
+        close(cons_dna_writer)
+        close(cons_aa_writer)
+        close(cura_dna_writer)
+        close(cura_aa_writer)
+    end
 end
 
 # This function's API is meant for snakemake
@@ -144,6 +187,7 @@ function illumina_snakemake_entrypoint(
     report_path::AbstractString, # output report
     ref_dir::AbstractString, # dir of .fna + .jls ref files
     aln_dir::AbstractString, # dir of medaka / kma aln
+    cons_dir::AbstractString,
     depths_plot_dir::AbstractString
 )
     basenames = sort!(readdir(aln_dir))
@@ -156,7 +200,7 @@ function illumina_snakemake_entrypoint(
     # Get references
     maybe_ref_tuples = load_references(maybe_asm_tuples, ref_dir)
 
-    # Convert to maybe_refasms.
+    # Merge assemblies and references to maybe_refasms.
     maybe_refasm_tuples = zip(maybe_asm_tuples, maybe_ref_tuples) |> 
     Map() do (maybe_asm_tuple, maybe_ref_tuple)
         ntuple = SegmentTuple(zip(maybe_asm_tuple, maybe_ref_tuple))
@@ -166,14 +210,43 @@ function illumina_snakemake_entrypoint(
         end
     end |> Folds.collect
 
-    # Load depths
-    maybe_depths_tuples = basenames |> Map() do basename
-        from_mat(joinpath(aln_dir, basename, "kma1.mat.gz"))
+    # Extra data:
+    extras = [ntuple(i -> Dict{String, Any}(), N_SEGMENTS) for i in basenames]
+
+    # Extra: Add depth (and plot it!)
+    mkdir(depths_plot_dir)
+    for (basename, dict_tuple) in zip(basenames, extras)
+        depths = from_mat(joinpath(aln_dir, basename, "kma1.mat.gz"))
+        #plot_depths(joinpath(depths_plot_dir, basename * ".pdf"), depths)
+
+        for (dict, maybe_depth) in zip(dict_tuple, depths)
+            if !is_error(maybe_depth)
+                dict["depths"] = unwrap(maybe_depth)
+            end
+        end
+    end
+
+    # Extra: Add kma2 identity check
+    for (basename, dict_tuple) in zip(basenames, extras)
+        second_kma_file = joinpath(aln_dir, basename, "kma2.res")
+        for (dict, maybe_identity_error) in zip(dict_tuple, check_second_kma_file(second_kma_file))
+            if !is_error(maybe_identity_error)
+                dict["second_identity"] = [unwrap(maybe_identity_error)]
+            end
+        end
+    end
+
+    # Get segment report lines
+    basename_reports = zip(maybe_refasm_tuples, extras) |> Map() do (maybe_refasm_tup, extra_tup)
+        basename_report_lines(maybe_refasm_tup, extra_tup)
     end |> Folds.collect
 
-    # Extras
-    #extras_tuples = zip(maybe_depths_tuples,) |> Map() do (m_depth)
-
-
-    (maybe_refasm_tuples, maybe_depths_tuples)
+    # Create report itself
+    open(report_path, "w") do io
+        write_report(io, basenames, basename_reports)
+    end
+    
+    # Write out consensus
+    write_consensus(cons_dir, basenames, maybe_refasm_tuples)
+    return nothing
 end

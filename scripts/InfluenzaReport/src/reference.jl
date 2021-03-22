@@ -73,13 +73,13 @@ function load_references(
     refdir::AbstractString
 )::Vector{SegmentTuple{Option{Reference}}}
     # Create (asm => (segment, string)) dict
-    accession_map::Dict{Assembly, Tuple{Segment, String}} = maybe_asm_tuples |>
+    accession_map = maybe_asm_tuples |>
     Cat() ⨟
     Filter(!is_error) ⨟
     Map() do maybe_asm
         asm = unwrap(maybe_asm)
         asm => (asm.segment, asm.accession)
-    end |> Dict
+    end |> Dict{Assembly, Tuple{Segment, String}}
 
     reference_map::Dict{Tuple{Segment, String}, Reference} = 
         load_references(Set(values(accession_map)), refdir)

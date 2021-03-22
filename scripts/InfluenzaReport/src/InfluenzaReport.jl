@@ -12,7 +12,8 @@ using Transducers
 using Folds
 using Plots
 
-const SegmentTuple{T} = NTuple{length(instances(Segment)), T}
+const N_SEGMENTS = length(instances(Segment))
+const SegmentTuple{T} = NTuple{N_SEGMENTS, T}
 const TERMINAL = 25
 
 function split!(v::Vector{SubString{String}}, s::Union{String, SubString{String}}, sep::UInt8)

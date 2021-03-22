@@ -1,3 +1,12 @@
+"""
+    ORFData
+
+An `ORFData` object contains protein-specific information from the alignment
+between an influenza segment and a reference segment. Its construction checks for
+sutff lifethe presence of valid reading frames, indels compared to the reference.
+
+Construct with `ORFData(::ProteinORF, ::PairwiseAlignment)`.
+"""
 struct ORFData
     variant::Protein
     seq::LongDNASeq
@@ -32,8 +41,11 @@ function push_codon(x::DNACodon, nt::DNA)
     reinterpret(DNACodon, ifelse(val === 0xff, zero(UInt), enc))
 end
 
-# A function to get the Assembly and a protein in a Reference
-function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, LongDNASeq})
+"""Compares a protein and an alignment between a segment containing the protein
+and the referece segment that contains that protein.
+"""
+function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, LongDNASeq}
+)::Tuple{LongDNASeq, Vector{UnitRange{UInt16}}, Vector{ErrorMessage}}
     nucleotides = DNA[]
     last_ref_pos = findlast(protein.mask)
     codon = mer"AAA" # arbitrary starting codon
@@ -76,7 +88,8 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
                     push!(indel_messages, ErrorMessage(is_important(protein.var) ? important : trivial,
                         "$(protein.var) frameshift deletion of $n_deletions bases b/w bases $(seg_pos-1)-$(seg_pos)"))
                 else
-                    push!(indel_messages, ErrorMessage(trivial,
+                    # We accept 7 aas deleted, but not more
+                    push!(indel_messages, ErrorMessage(n_deletions > 21 ? important : trivial,
                         "$(protein.var) deletion of $n_deletions bases b/w bases $(seg_pos-1)-$(seg_pos)"))
                 end
                 n_deletions = 0
@@ -92,7 +105,8 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
                     push!(indel_messages, ErrorMessage(is_important(protein.var) ? important : trivial,
                         "$(protein.var) frameshift insertion of bases $(seg_pos-n_insertions)-$(seg_pos-1)"))
                 else
-                    push!(indel_messages, ErrorMessage(trivial,
+                    # 10 aa insertions are OK, more must be a nonfunctional mutant
+                    push!(indel_messages, ErrorMessage(n_insertions > 30 ? important : trivial,
                     "$(protein.var)  insertion of bases $(seg_pos-n_insertions)-$(seg_pos-1)"))
                 end
                 n_insertions = 0
@@ -108,7 +122,10 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
             if is_error(maybe_expected_stop)
                 n_aa = div(length(nucleotides), 3)
                 expected_aa = div(sum(protein.mask), 3)
-                push!(messages, ErrorMessage(is_important(protein.var) ? important : trivial,
+
+                # We consider early stopping (truncation) an error if it is 5 aa or more shorter
+                importance = is_important(protein.var) && n_aa < expected_aa - 4 ? important : trivial
+                push!(messages, ErrorMessage(importance,
                 "$(protein.var) stops early, at pos $seg_pos, after $(n_aa) aa (ref is $(expected_aa) aa)."))
             else
                 expected_stop = unwrap(maybe_expected_stop)

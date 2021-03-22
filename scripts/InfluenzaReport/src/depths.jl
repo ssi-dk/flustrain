@@ -2,8 +2,7 @@ struct Depths
     depths::Vector{UInt32}
 end
 
-function error_report(maybe_depths::Option{Depths})::Option{Tuple{String, Vector{ErrorMessage}}}
-    depths = @? maybe_depths
+function error_report(depths::Depths)::Tuple{String, Vector{ErrorMessage}}
     if length(depths.depths) < 2*TERMINAL+1
         return ("ERROR: DEPTHS TOO SHORT", ErrorMessage[])
     end
@@ -25,13 +24,13 @@ function error_report(maybe_depths::Option{Depths})::Option{Tuple{String, Vector
         push!(messages, ErrorMessage(severity, "$lowdepth central bases with depth < 25"))
     end
 
-    some((header, messages))
+    return (header, messages)
 end
 
 "Given a path to a .mat.gz file, return a dict of an optional vec of depths"
 function from_mat(matpath::AbstractString)::SegmentTuple{Option{Depths}}
     open(matpath) do io
-        result = fill(none(Vector{UInt32}), length(instances(Segment)))
+        result = fill(none(Vector{UInt32}), N_SEGMENTS)
         segment = nothing
         depths = UInt32[]
         fields = Vector{SubString{String}}(undef, 7)
@@ -73,7 +72,7 @@ end
 function from_samtools_depth(path::AbstractString)::SegmentTuple{Option{Depths}}
     open(path) do io
         position = 1
-        result = fill(none(Vector{UInt32}), length(instances(Segment)))
+        result = fill(none(Vector{UInt32}), N_SEGMENTS)
         fields = Vector{SubString{String}}(undef, 3)
         for line in eachline(GzipDecompressorStream(io))
             split!(fields, line, UInt8('\t'))
@@ -101,7 +100,7 @@ end
 # This function is thread-unsafe, and must be called in serial.
 function plot_depths(path::AbstractString, depths::SegmentTuple{Option{Depths}})
     plt = plot(ylabel="Log10 depths", xticks=nothing, ylim=(-0.1, 5))
-    for (index, maybe_depths) in depths
+    for (index, maybe_depths) in enumerate(depths)
         data = @unwrap_or maybe_depths continue
         segment = Segment(index - 1)
         ys = log10.(data.depths)
