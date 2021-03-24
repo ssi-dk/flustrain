@@ -7,7 +7,9 @@ import tools
 
 # We only need this because Julia 1.6 segfaults with PkgCompiler at the moment
 SYSIMG_PATH = os.path.join(SNAKEDIR, "scripts", "sysimg", "sysimg.so")
-JULIA_COMMAND = f"julia --startup-file=no --project={SNAKEDIR} -J {SYSIMG_PATH}"
+
+# TODO: I've removed -J {SYSIMG_PATH} here while I rewrite the workflow. Can be re-added later.
+JULIA_COMMAND = f"julia --startup-file=no --project={SNAKEDIR}"
 
 ######################################################
 # GLOBAL CONSTANTS
@@ -31,7 +33,7 @@ if "platform" not in config or config["platform"] not in ["illumina", "nanopore"
 
 IS_NANOPORE = config["platform"] == "nanopore"
 IS_ILLUMINA = config["platform"] == "illumina"
-assert IS_NANOPORE ^ IS_ILLUMINA
+assert IS_NANOPORE ^ IS_ILLUMINA # only one must be true at a time
 
 if IS_NANOPORE:
     if "pore" not in config:
@@ -77,6 +79,7 @@ def done_input(wildcards):
         for direction in ["fw", "rv"]:
             inputs.append(f"trim/{basename}/{direction}.fq.gz")
 
+        inputs.append(f"depths/{basename}.pdf")
         inputs.append(f"consensus/{basename}/consensus.fna")
 
     return inputs
@@ -187,7 +190,7 @@ rule collect_best_templates:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/gather_spa.jl",
         refpath=REFSEQDIR
-    shell: "julia {params.scriptpath} aln {params.refpath}"
+    shell: "{params.juliacmd} {params.scriptpath} aln {params.refpath}"
 
 if IS_ILLUMINA:
     rule first_kma_index:
@@ -263,7 +266,8 @@ if IS_ILLUMINA:
             keeprv="trim/{basename}/rv.fq.gz"
         output:
             res="aln/{basename}/kma2.res",
-            fsa="aln/{basename}/kma2.fsa"
+            fsa="aln/{basename}/kma2.fsa",
+            mat="aln/{basename}/kma2.mat.gz"
         params:
             db="aln/{basename}/cat.trimmed",
             outbase="aln/{basename}/kma2",
@@ -271,7 +275,7 @@ if IS_ILLUMINA:
         threads: 2
         run:
             shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-            "-t {threads} -1t1 -gapopen -5 -nf 2> {log}")
+            "-t {threads} -1t1 -gapopen -5 -nf -matrix 2> {log}")
 elif IS_NANOPORE:
     rule medaka:
         input: 
@@ -322,5 +326,9 @@ checkpoint create_report:
     log: "log/report.txt"
     threads: workflow.cores
     run:
-        shell(f"julia -t {threads} {params.scriptpath} consensus report.txt "
+        shell(f"{params.juliacmd} -t {threads} {params.scriptpath} consensus report.txt "
                "depths aln kma2.fsa kma2.res kma1.mat.gz {params.refdir} > {log}")
+
+rule phylogeny:
+    input:
+        

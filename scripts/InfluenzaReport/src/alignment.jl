@@ -55,7 +55,7 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
     for (seg_nt, ref_nt) in aln
         seg_pos += (seg_nt !== DNA_Gap)
         ref_pos += (ref_nt !== DNA_Gap)
-        is_coding = protein.mask[ref_pos]
+        is_coding = !iszero(ref_pos) && protein.mask[ref_pos]
 
         if is_coding
             if (orfstart === nothing) & (seg_nt !== DNA_Gap)

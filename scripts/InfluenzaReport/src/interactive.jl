@@ -43,7 +43,7 @@ function parse_blastout(io::IO, minlength::Integer)::Option{String}
     fields = Vector{SubString{String}}(undef, 4)
     hits = eachline(io) |> Map(strip) |> Filter(!isempty) |> Map() do line
         split!(fields, line, UInt8('\t'))
-        bitscore = parse(UInt, fields[2])
+        bitscore = parse(Float64, fields[2])
         len = parse(UInt, fields[3])
         ident = parse(Float64, fields[4]) / 100
         (String(first(fields)), bitscore, len, ident)
