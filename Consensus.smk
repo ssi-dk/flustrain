@@ -16,7 +16,7 @@ JULIA_COMMAND = f"julia --startup-file=no --project={SNAKEDIR}"
 ######################################################
 # ------ Readdir -------
 if "readdir" not in config:
-    raise KeyError("You must supply absolute read path: '--config readdir=/path/to/reads'")
+    raise KeyError("You must supply read path: '--config readdir=path/to/reads'")
 
 READDIR = config["readdir"]
 
@@ -63,16 +63,10 @@ SEGMENTS = sorted([fn.rpartition('.')[0] for fn in os.listdir(REFSEQDIR) if fn.e
 # Start of pipeline
 ######################################################
 
-# We add the checkpoiint output here just to make sure the checkpoint is included
-# in the DAG
-
 # TODO: After report.jl refactor, check all outputs are present here.
 def done_input(wildcards):
     # Add report and the commit
     inputs = ["report.txt"]
-
-    # By adding this checkpoint, we can access stuff not existing yet
-    checkpoints.create_report.get()
 
     for basename in BASENAMES:
         # Add trimmed FASTQ
@@ -116,6 +110,7 @@ rule gzip:
 
 if IS_ILLUMINA:
     ruleorder: second_kma_map > first_kma_map > gzip
+
     rule fastp:
         input:
             fw=lambda wildcards: READS[wildcards.basename][0],
@@ -145,10 +140,13 @@ if IS_ILLUMINA:
         threads: 1
         log: "log/aln/{basename}_{segment}.initial.log"
         shell:
-            # Sort by template coverate (-ss c), otherwise "best" template will
-            # be driven by erroneous sequencing kmers
+            # Here, not sure if I should sort by template cov (-ss c) or not.
+            # Pro: We mostly care about having a fully-covered template, not a partially
+            # covered with high depth at the covered areas:
+            # Con: Majority vote will win away, so it'll just fuck up if we pick a
+            # uniformly, but low covered reference anyway
             "kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-            "-t {threads} -Sparse -ss c 2> {log}"
+            "-t {threads} -Sparse 2> {log}"
 
 elif IS_NANOPORE:
     rule fastp:
@@ -177,10 +175,9 @@ elif IS_NANOPORE:
         threads: 1
         log: "log/aln/{basename}_{segment}.initial.log"
         shell:
-            # Sort by template coverate (-ss c), otherwise "best" template will
-            # be driven by erroneous sequencing kmers
+            # See above comment in rule with same name
             "kma -i {input.reads} -o {params.outbase} -t_db {params.db} "
-            "-t {threads} -Sparse -ss c 2> {log}"
+            "-t {threads} -Sparse 2> {log}"
 
 ### Both platforms
 rule collect_best_templates:
@@ -226,26 +223,53 @@ if IS_ILLUMINA:
         run:
             shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
             "-t {threads} -1t1 -gapopen -5 -nf -matrix 2> {log}")
+    
+    rule copy_assembly:
+        input: rules.first_kma_map.output.fsa
+        output: "aln/{basename}/cat.untrimmed.fna"
+        shell: "cp {input} {output}"
 
-    rule remove_primers:
-        input:
-            con=rules.first_kma_map.output.fsa,
-            primers=f"{SNAKEDIR}/ref/primers.fna"
-        output: temp("aln/{basename}/cat.trimmed.fna")
-        log: "log/consensus/remove_primers_{basename}.txt"
+elif IS_NANOPORE:
+    rule medaka:
+        input: 
+            reads=rules.fastp.output.reads,
+            draft="aln/{basename}/cat.fna"
+        output: "aln/{basename}/medaka"
+        log: "log/aln/medaka_{basename}.log"
+        threads: 2
         params:
-            juliacmd=JULIA_COMMAND,
-            scriptpath=f"{SNAKEDIR}/scripts/trim_consensus.jl",
-            minmatches=4,
-            fuzzylen=8,
-        run:
-            shell("{params.juliacmd} {params.scriptpath} {input.primers} "
-                "{input.con} {output} {params.minmatches} {params.fuzzylen} > {log}")
+            model=lambda wc: "r941_min_high_g360" if PORE == 9 else "r103_min_high_g360"
+        shell: 
+            "medaka_consensus -i {input.reads} -d {input.draft} -o {output} -t {threads} "
+            "-m {params.model}"
 
+    rule copy_assembly:
+        input: rules.medaka.output
+        output: "aln/{basename}/cat.untrimmed.fna"
+        shell: "cp {input}/consensus.fasta {output}"
+
+
+# Both platforms
+rule remove_primers:
+    input:
+        con=rules.copy_assembly.output,
+        primers=f"{SNAKEDIR}/ref/primers.fna"
+    output: temp("aln/{basename}/cat.trimmed.fna")
+    log: "log/consensus/remove_primers_{basename}.txt"
+    params:
+        juliacmd=JULIA_COMMAND,
+        scriptpath=f"{SNAKEDIR}/scripts/trim_consensus.jl",
+        minmatches=4,
+        fuzzylen=8,
+    shell:
+        "{params.juliacmd} {params.scriptpath} {input.primers} "
+        "{input.con} {output} {params.minmatches} {params.fuzzylen} > {log}"
+
+if IS_ILLUMINA:
     # We now re-map to the created consensus sequence in order to accurately
     # estimate depths and coverage, and get a more reliable assembly seq.
     rule second_kma_index:
-        input: "aln/{basename}/cat.trimmed.fna"
+        input: rules.remove_primers.output
         output:
             comp=temp("aln/{basename}/cat.trimmed.comp.b"),
             name=temp("aln/{basename}/cat.trimmed.name"),
@@ -276,59 +300,24 @@ if IS_ILLUMINA:
         run:
             shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
             "-t {threads} -1t1 -gapopen -5 -nf -matrix 2> {log}")
-elif IS_NANOPORE:
-    rule medaka:
-        input: 
-            reads=rules.fastp.output.reads,
-            draft="aln/{basename}/cat.fna"
-        output: "aln/{basename}/medaka"
-        log: "log/aln/medaka_{basename}.log"
-        threads: 2
-        params:
-            model=lambda wc: "r941_min_high_g360" if PORE == 9 else "r103_min_high_g360"
-        shell: 
-            "medaka_consensus -i {input.reads} -d {input.draft} -o {output} -t {threads} "
-            "-m {params.model}"
-
-    # In our current lab setup, we use primers to amplify our influeza segments. But these do not have the
-    # proper sequence. We do this before the final mapping step in order to get well-defined
-    # start and stop of the sequenced part for the last round of mapping.
-    rule remove_primers:
-        input:
-            con=rules.medaka.output,
-            primers=f"{SNAKEDIR}/ref/primers.fna"
-        output: temp("aln/{basename}/consensus.trimmed.fna")
-        log: "log/consensus/remove_primers_{basename}.txt"
-        params:
-            juliacmd=JULIA_COMMAND,
-            scriptpath=f"{SNAKEDIR}/scripts/trim_consensus.jl",
-            minmatches=4,
-            fuzzylen=8,
-        run:
-            shell("{params.juliacmd} {params.scriptpath} {input.primers} "
-                "{input.con}/consensus.fasta {output} {params.minmatches} {params.fuzzylen} > {log}")
 
 ### Both platforms
-checkpoint create_report:
+rule create_report:
     input:
         matrix=expand("aln/{basename}/kma1.mat.gz", basename=BASENAMES),
         assembly=expand("aln/{basename}/kma2.fsa", basename=BASENAMES),
         res=expand("aln/{basename}/kma2.res", basename=BASENAMES)
     output:
         consensus=expand("consensus/{basename}/{type}.{nuc}",
-            basename=BASENAMES, type=["consensus", "curated"], nuc=["fna", "faa"]),
+            basename=BASENAMES, type=["consensus", "curated"], nuc=["fna", "faa"]
+        ),
         report="report.txt",
         depths=expand("depths/{basename}.pdf", basename=BASENAMES)
     params:
         juliacmd=JULIA_COMMAND,
-        scriptpath=f"{SNAKEDIR}/scripts/report.jl",
+        scriptpath=f"{SNAKEDIR}/scripts/InfluenzaReport/src/InfluenzaReport.jl",
         refdir=REFSEQDIR
     log: "log/report.txt"
     threads: workflow.cores
     run:
-        shell(f"{params.juliacmd} -t {threads} {params.scriptpath} consensus report.txt "
-               "depths aln kma2.fsa kma2.res kma1.mat.gz {params.refdir} > {log}")
-
-rule phylogeny:
-    input:
-        
+        shell(f"{params.juliacmd} -t {threads} {params.scriptpath} . {params.refdir} > {log}")

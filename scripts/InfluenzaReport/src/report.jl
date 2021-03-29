@@ -153,10 +153,10 @@ end
 function write_consensus(dirname::String, basenames::Vector{String},
     maybe_refasm_tuples::Vector{SegmentTuple{Option{ReferenceAssembly}}}
 )
-    mkdir(dirname)
+    isdir(dirname) || mkdir(dirname)
     for (basename, maybe_refasm_tuple) in zip(basenames, maybe_refasm_tuples)
         subdir = joinpath(dirname, basename)
-        mkdir(subdir)
+        isdir(subdir) || mkdir(subdir)
         cons_dna_writer = open(FASTA.Writer, joinpath(subdir, "consensus.fna"))
         cons_aa_writer = open(FASTA.Writer, joinpath(subdir, "consensus.faa"))
         cura_dna_writer = open(FASTA.Writer, joinpath(subdir, "curated.fna"))
@@ -214,7 +214,7 @@ function illumina_snakemake_entrypoint(
     extras = [ntuple(i -> Dict{String, Any}(), N_SEGMENTS) for i in basenames]
 
     # Extra: Add depth (and plot it!)
-    mkdir(depths_plot_dir)
+    isdir(depths_plot_dir) || mkdir(depths_plot_dir)
     for (basename, dict_tuple) in zip(basenames, extras)
         depths = from_mat(joinpath(aln_dir, basename, "kma1.mat.gz"))
         plot_depths(joinpath(depths_plot_dir, basename * ".pdf"), depths)
