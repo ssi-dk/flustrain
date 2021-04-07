@@ -50,9 +50,9 @@ function asm_dna_record(x::ReferenceAssembly, header::String)
     record = FASTA.Record(header, x.asmseq)
     data = record.data
     @assert length(record.sequence) == length(x.insignificant)
-    for (i, (isbad, seqpos)) in enumerate(zip(x.insignificant, record.sequence))
+    for (isbad, seqpos) in zip(x.insignificant, record.sequence)
         if isbad
-            data[i] += 0x20 # this sets it to lowercase for ASCII
+            data[seqpos] += 0x20 # this sets it to lowercase for ASCII
         end
     end
     return record

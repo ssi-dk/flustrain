@@ -30,19 +30,17 @@ function main()
     segment_data = open(parse_cleaned_genomeset, joinpath("results", "genomeset.clean.dat"))
     
     # Load influenza.fna and update the seq field of the SegmentData
-    open(joinpath("download", "influenza.fna.gz")) do io
-        add_sequences!(segment_data, GzipDecompressorStream(io))
+    maybe_gzip(joinpath("download", "influenza.fna.gz")) do io
+        add_sequences!(segment_data, io)
     end
 
     # Load influenza_aa.dat.gz to get information on what kind of protein
     # the different ORFs make
-    accession_protein_map = open(joinpath("download", "influenza_aa.dat.gz")) do io
-        parse_inf_aa(GzipDecompressorStream(io))
-    end
+    accession_protein_map = maybe_gzip(parse_inf_aa, joinpath("download", "influenza_aa.dat.gz"))
 
     # Load influenza.dat and update the ORF fields of SegmentData
-    open(joinpath("download", "influenza.dat.gz")) do io
-        add_orfs!(segment_data, accession_protein_map, GzipDecompressorStream(io))
+    maybe_gzip(joinpath("download", "influenza.dat.gz")) do io
+        add_orfs!(segment_data, accession_protein_map, io)
     end
 
     # We remove the human sequences, because we want to add in a set of manually
@@ -50,8 +48,14 @@ function main()
     filter!(pair -> last(pair).host ∈ (avian, swine), segment_data)
 
     # Add extra records - these are annotated by The NCBI Influenza Virus Sequence Annotation Tool
-    # and manually curated to have the exact right format of the header
-    add_extra_records!(segment_data, joinpath("raw", "annotation.tbl.gz"), joinpath("raw", "seqs.fna.gz"))
+    # and manually curated to have the exact right format of the header.
+    # These are the human sequences that should NOT be deduplicated
+    add_extra_records!(segment_data, joinpath("raw", "annotation.tbl.gz"), joinpath("raw", "seqs.fna.gz"), false)
+
+    # Do the exact same thing for extra, user-input sequences. I do this in order to have a homemade
+    # file where I can add rare, unseen sequences to. Should I perhaps upload them?
+    # These ones are deduplicated
+    add_extra_records!(segment_data, joinpath("raw", "annotation.extra.tbl"), joinpath("raw", "seqs.extra.fna"), true)
 
     # Series of filters on the SegmentData
     filter_segment_data!(segment_data)
@@ -186,6 +190,7 @@ struct SegmentData
     host::Species
     segment::Segment
     subtype::SubType
+    deduplicate::Bool
     clade::Option{String}
     year::Int16
     name::String
@@ -212,7 +217,7 @@ function Base.parse(::Type{SegmentData}, line::Union{String, SubString{String}})
     gi = String(fields[1])
     name = String(fields[8])
     segment = @? parse_from_integer(Segment, fields[3])
-    some(SegmentData(gi, host, segment, subtype, none(String), year, name, ProteinORF[], Ref(none(LongDNASeq))))
+    some(SegmentData(gi, host, segment, subtype, true, none(String), year, name, ProteinORF[], Ref(none(LongDNASeq))))
 end
 
 function parse_year(s::Union{String, SubString})::Option{Int16}
@@ -429,27 +434,57 @@ function is_all_translatable(data::SegmentData)::Bool
     return true
 end
 
-function add_extra_records!(segment_data::Dict{String, SegmentData}, annotpath::String, fastapath::String)
+function join!(seq::BioSequence, it)
+    len = sum(length, it)
+    length(seq) != len && resize!(seq, len)
+    offset = 0
+    for i in it
+        seq[offset+1:offset+length(i)] = i
+        offset += length(i)
+    end
+    @assert offset == len
+    return seq
+end
+
+function add_extra_records!(
+    segment_data::Dict{String, SegmentData},
+    annotpath::String,
+    fastapath::String,
+    deduplicate::Bool
+)
     # id => data from the FASTA file
-    records = get_extra_records(fastapath)
+    records = get_extra_records(fastapath, deduplicate)
 
     # Add info from annotated ORFS
     fill_orfs_extra_records!(records, annotpath)
 
     # Merge with the original segment_data dict
     @assert isdisjoint(keys(segment_data), keys(records))
-    println(length(segment_data))
     merge!(segment_data, records)
 end
 
-function get_extra_records(fastapath::String)
+# This is pretty primitive, but fuck it
+function maybe_gzip(f, path::AbstractString)
+    if endswith(path, ".gz")
+        io = GzipDecompressorStream(open(path))
+        try
+            f(io)
+        finally
+            close(io)
+        end
+    else
+        open(f, path)
+    end
+end
+
+function get_extra_records(fastapath::String, deduplicate::Bool)
     records = Dict{String, SegmentData}()
-    open(fastapath) do io
-        reader = FASTA.Reader(GzipDecompressorStream(io))
+    maybe_gzip(fastapath) do io
+        reader = FASTA.Reader(io)
         record = FASTA.Record()
         while !eof(reader)
             read!(reader, record)
-            data = parse_data_from_header(FASTA.header(record)::String)
+            data = parse_data_from_header(FASTA.header(record)::String, deduplicate)
             data.seq[] = some(FASTA.sequence(LongDNASeq, record))
             @assert !haskey(records, data.id)
             records[data.id] = data
@@ -458,11 +493,11 @@ function get_extra_records(fastapath::String)
     records
 end
 
-function parse_data_from_header(header::String)::SegmentData
+function parse_data_from_header(header::String, deduplicate::Bool)::SegmentData
     # Looks like this "EPI1843298|avian|NS|H1N1|2021|A/Denmark/1/2021|CLADE"
     # some of the fields may be empty
     fields = split(header, '|')
-    @assert length(fields) == 7
+    @assert length(fields) == 7 header
     id, s_species, s_segment, s_subtype, s_year, name, clade = fields
     @assert !isempty(id)
     @assert !isempty(name)
@@ -476,6 +511,7 @@ function parse_data_from_header(header::String)::SegmentData
         species,
         unwrap(parse(Segment, s_segment)),
         unwrap(parse(SubType, s_subtype)),
+        deduplicate,
         isempty(clade) ? none(String) : some(String(clade)),
         parse(Int16, s_year),
         name,
@@ -485,12 +521,14 @@ function parse_data_from_header(header::String)::SegmentData
 end
 
 function fill_orfs_extra_records!(records::Dict{String, SegmentData}, annotpath::String)
-    chunks = open(annotpath) do file
-        partition_chunks(GzipDecompressorStream(file))
+    chunks = maybe_gzip(annotpath) do file
+        partition_chunks(file)
     end
+    filled_ids = Set{String}()
     for chunk in chunks
-        parse_annot_segment_data!(records, chunk)
+        parse_annot_segment_data!(records, filled_ids, chunk)
     end
+    @assert length(records) == length(filled_ids)
     records
 end
 
@@ -510,11 +548,16 @@ function partition_chunks(io::IO)::Vector{Vector{String}}
     push!(chunks, chunk)
 end
 
-function parse_annot_segment_data!(records::Dict{String, SegmentData}, chunk::Vector{String})
+function parse_annot_segment_data!(
+    records::Dict{String, SegmentData},
+    filled_ids::Set{String},
+    chunk::Vector{String}
+)
     @assert startswith(first(chunk), ">Feature ")
     header = first(chunk)[10:end]
     id = first(split(header, '|'))
     @assert haskey(records, id)
+    push!(filled_ids, id)
     data = records[id]
     orfs = UnitRange{UInt16}[]
     reading_cds = false
@@ -540,21 +583,22 @@ end
 "Deduplicate all non-human seqs and add the human ones back"
 function cd_hit_deduplicate(segment_data::Dict{String, SegmentData}
 )::Dict{Segment, Set{String}}
-    @warn "Not deduplicating human sequences"
+    n_non_dedup = count(i -> !(i.deduplicate), values(segment_data))
+    @warn "Not deduplicating $n_non_dedup sequences marked as non-duplicate"
 
     subdir = joinpath("results", "cdhit")
     isdir(subdir) || mkdir(subdir)
 
-    nonhuman = filter(segment_data) do (key, data)
-        data.host != human
+    duplicatable = filter(segment_data) do (key, data)
+        data.deduplicate
     end
 
     println("Deduplicating sequences...")
-    deduplicated = cd_hit_deduplicate(collect(values(nonhuman)), subdir)
+    deduplicated = cd_hit_deduplicate(collect(values(duplicatable)), subdir)
 
-    # Add in the ids of human seqs back and return deduplicated
+    # Add in the ids of non-duplicated back
     for (key, data) in segment_data
-        if data.host == human
+        if !data.deduplicate
             push!(deduplicated[data.segment], data.id)
         end
     end
@@ -610,6 +654,8 @@ end
 function serialize_segments(segment_data::Dict{String, SegmentData},
     deduplicated::Dict{Segment, Set{String}}
 )
+    serialize_subtypes(segment_data, deduplicated)
+
     serial_dir = joinpath("results/deduplicated")
     isdir(serial_dir) || mkdir(serial_dir)
 
@@ -630,6 +676,17 @@ function serialize_segments(segment_data::Dict{String, SegmentData},
             end
         end
     end
+end
+
+# Serialize subtypes into a vector of (id, subtype)
+function serialize_subtypes(segment_data::Dict{String, SegmentData},
+    deduplicated::Dict{Segment, Set{String}}
+)
+    v = Tuple{String, SubType}[]
+    for (s, ids) in deduplicated
+        append!(v, [(s, segment_data[s].subtype) for s in ids])
+    end
+    open(io -> serialize(io, v), "results/subtypes.jls", "w")
 end
 
 function serialize_orfs(segment_data::Dict{String, SegmentData},

@@ -102,8 +102,8 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
                     push!(indel_messages, ErrorMessage(is_important(protein.var) ? important : trivial,
                         "$(protein.var) frameshift insertion of bases $(seg_pos-n_insertions)-$(seg_pos-1)"))
                 else
-                    # 10 aa insertions are OK, more must be a nonfunctional mutant
-                    push!(indel_messages, ErrorMessage(n_insertions > 30 ? important : trivial,
+                    # 12 aa insertions are OK, more must be a nonfunctional mutant
+                    push!(indel_messages, ErrorMessage(n_insertions > 36 ? important : trivial,
                     "$(protein.var)  insertion of bases $(seg_pos-n_insertions)-$(seg_pos-1)"))
                 end
                 n_insertions = 0
@@ -120,8 +120,8 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
                 n_aa = div(length(nucleotides), 3)
                 expected_aa = div(sum(protein.mask), 3)
 
-                # We consider early stopping (truncation) an error if it is 5 aa or more shorter
-                importance = is_important(protein.var) && n_aa < expected_aa - 4 ? important : trivial
+                # We consider early stopping (truncation) an error if it is 15 aa or more shorter
+                importance = is_important(protein.var) && n_aa < expected_aa - 14 ? important : trivial
                 push!(messages, ErrorMessage(importance,
                 "$(protein.var) stops early, at pos $seg_pos, after $(n_aa) aa (ref is $(expected_aa) aa)."))
             else
