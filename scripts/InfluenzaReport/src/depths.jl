@@ -27,10 +27,11 @@ function error_report(depths::Depths)::Tuple{String, Vector{ErrorMessage}}
     return (header, messages)
 end
 
-"Given a path to a .mat.gz file, return a dict of an optional vec of depths"
-function from_mat(matpath::AbstractString)::SegmentTuple{Option{Depths}}
+depths_from_mat(mat::Matrix{<:Integer}) = Depths(vec(sum(mat, dims=1)))
+
+function from_mat(matpath::AbstractString)::SegmentTuple{Option{Matrix{UInt32}}}
     open(matpath) do io
-        result = fill(none(Vector{UInt32}), N_SEGMENTS)
+        result = fill(none(Matrix{UInt32}), N_SEGMENTS)
         segment = nothing
         depths = UInt32[]
         fields = Vector{SubString{String}}(undef, 7)
@@ -40,7 +41,7 @@ function from_mat(matpath::AbstractString)::SegmentTuple{Option{Depths}}
                 if !isempty(depths)
                     segment_index = reinterpret(UInt8, segment::Segment) + 0x01
                     is_error(result[segment_index]) || error("Segment $segment present twice in $matpath")
-                    result[segment_index] = some(depths)
+                    result[segment_index] = some(reshape(depths, 4, :))
                     depths = UInt32[]
                 end
                 continue
@@ -58,15 +59,41 @@ function from_mat(matpath::AbstractString)::SegmentTuple{Option{Depths}}
             end
             # Skip lines with majority as deletion
             argmax(linedepths) == 6 && continue
-            total_depth = sum(linedepths)
-            # We don't include N in depths!
-            depth = total_depth - linedepths[5]
-            push!(depths, depth)
+
+            # Only append A, C, G, T counts, skip N and gap
+            append!(depths, view(linedepths, 1:4))
         end
-        SegmentTuple(map(result) do maybe_vector
-            and_then(Depths, Depths, maybe_vector)
-        end)
+        SegmentTuple(result)
     end
+end
+
+"""
+This splits the matrix into the most common (top) allele and the second-most common (bottom).
+It uses heuristics to try to not get too much fluctuations in the bottom's depth.
+"""
+function split_matrix(m::AbstractMatrix{<:Integer})
+    top, bottom = Vector{eltype(m)}(undef, size(m, 2)), Vector{eltype(m)}(undef, size(m, 2))
+    bottomi, topi = nothing, zero(eltype(m))
+    delta_max = 2.0
+    v = zeros(eltype(m), size(m, 2))
+    for col in 1:size(m, 2)
+        topy, bottomy = sort!(copyto!(v, view(m, :, col)), rev=true)
+        if bottomi === nothing || max(bottomy, bottomi) / min(bottomy, bottomi) < delta_max
+            bottomi = bottomy
+            topi = topy
+        end
+        bottom[col] = bottomi
+        top[col] = topi
+        bottomi = ifelse(bottomi < 10, nothing, bottomi)
+    end
+    top, bottom
+end
+
+"This is far from certain - it just gives a hint. Takes the matrix from from_mat"
+function is_superinfected(m::AbstractMatrix{<:Integer})
+    top, bottom = split_matrix(m)
+    topmean = sum(top) / length(top)
+    topmean > 250 && topmean < (10 * sum(bottom) / length(bottom))
 end
 
 function from_samtools_depth(path::AbstractString)::SegmentTuple{Option{Depths}}

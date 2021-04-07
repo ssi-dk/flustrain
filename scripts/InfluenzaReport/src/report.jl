@@ -216,12 +216,27 @@ function illumina_snakemake_entrypoint(
     # Extra: Add depth (and plot it!)
     isdir(depths_plot_dir) || mkdir(depths_plot_dir)
     for (basename, dict_tuple) in zip(basenames, extras)
-        depths = from_mat(joinpath(aln_dir, basename, "kma1.mat.gz"))
+        depths_matrices = from_mat(joinpath(aln_dir, basename, "kma1.mat.gz"))
+        depths = map(depths_matrices) do maybe_matrix
+            and_then(depths_from_mat, Depths, maybe_matrix)
+        end
+
+        # Plot depths
         plot_depths(joinpath(depths_plot_dir, basename * ".pdf"), depths)
 
+        # Add depth info to extra dict
         for (dict, maybe_depth) in zip(dict_tuple, depths)
             if !is_error(maybe_depth)
                 dict["depths"] = unwrap(maybe_depth)
+            end
+        end
+
+        # Add in information for superinfection
+        for (dict, maybe_matrix) in zip(dict_tuple, depths_matrices)
+            if !is_error(maybe_matrix)
+                if is_superinfected(unwrap(maybe_matrix))
+                    dict["superinfection"] = [ErrorMessage(trivial, "[ POSSIBLE SUPERINFECTION ]")]
+                end
             end
         end
     end

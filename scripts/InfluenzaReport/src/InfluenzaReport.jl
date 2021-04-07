@@ -36,6 +36,7 @@ function split!(v::Vector{SubString{String}}, s::Union{String, SubString{String}
         end
     end
     @inbounds v[n+1] = SubString(s, start, ncodeunits(s))
+    n + 1 < length(v) && error("not enough fields for split!")
     v
 end
 
