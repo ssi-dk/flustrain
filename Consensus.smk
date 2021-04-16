@@ -68,12 +68,14 @@ def done_input(wildcards):
     # Add report and the commit
     inputs = ["report.txt"]
 
+    # Add trimmed FASTQ
     for basename in BASENAMES:
-        # Add trimmed FASTQ
-        for direction in ["fw", "rv"]:
-            inputs.append(f"trim/{basename}/{direction}.fq.gz")
+        if IS_ILLUMINA:
+            for direction in ["fw", "rv"]:
+                inputs.append(f"trim/{basename}/{direction}.fq.gz")
+        else:
+            inputs.append(f"trim/{basename}/reads.fq.gz")
 
-        inputs.append(f"depths/{basename}.pdf")
         inputs.append(f"consensus/{basename}/consensus.fna")
 
     return inputs
@@ -146,7 +148,7 @@ if IS_ILLUMINA:
             # Con: Majority vote will win away, so it'll just fuck up if we pick a
             # uniformly, but low covered reference anyway
             "kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
-            "-t {threads} -Sparse 2> {log}"
+            "-ss c -t {threads} -Sparse 2> {log}"
 
 elif IS_NANOPORE:
     rule fastp:
@@ -158,9 +160,9 @@ elif IS_NANOPORE:
         log: "log/fastp/{basename}.log"
         threads: 2
         shell:
-            'fastp -i {input} -o {output.reads} -O {output.rv} --html {output.html} '
+            'fastp -i {input} -o {output.reads} --html {output.html} '
             '--json {output.json} --disable_adapter_trimming  --disable_trim_poly_g '
-            '--cut_window_size 10 --cut_mean_quality 10 --low_complexity_filter  '
+            '--cut_window_size 10 --cut_mean_quality 10 --cut_tail --low_complexity_filter  '
             '--complexity_threshold 40 --length_limit 2400 --length_required 100 '
             '--average_qual 12 --thread {threads} 2> {log}'
 
@@ -177,35 +179,35 @@ elif IS_NANOPORE:
         shell:
             # See above comment in rule with same name
             "kma -i {input.reads} -o {params.outbase} -t_db {params.db} "
-            "-t {threads} -Sparse 2> {log}"
+            "-ss c -t {threads} -Sparse 2> {log}"
 
 ### Both platforms
 rule collect_best_templates:
     input: expand("aln/{basename}/{segment}.spa", segment=SEGMENTS, basename=BASENAMES)
-    output: temp(expand("aln/{basename}/cat.fna", basename=BASENAMES))
+    output: expand("aln/{basename}/cat.fna", basename=BASENAMES)
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/gather_spa.jl",
         refpath=REFSEQDIR
     shell: "{params.juliacmd} {params.scriptpath} aln {params.refpath}"
 
-if IS_ILLUMINA:
-    rule first_kma_index:
-        input: "aln/{basename}/cat.fna"
-        output:
-            comp=temp("aln/{basename}/cat.comp.b"),
-            name=temp("aln/{basename}/cat.name"),
-            length=temp("aln/{basename}/cat.length.b"),
-            seq=temp("aln/{basename}/cat.seq.b")
-        params:
-            t_db="aln/{basename}/cat"
-        log: "log/aln/kma1_index_{basename}.log"
-        # The pipeline is very sensitive to the value of k here.
-        # Too low means the mapping is excruciatingly slow,
-        # too high results in poor mapping quality.
-        # k = 10 might be a little on the low side.
-        shell: "kma index -k 10 -i {input} -o {params.t_db} 2> {log}"
+rule first_kma_index:
+    input: "aln/{basename}/cat.fna"
+    output:
+        comp="aln/{basename}/cat.comp.b",
+        name="aln/{basename}/cat.name",
+        length="aln/{basename}/cat.length.b",
+        seq="aln/{basename}/cat.seq.b"
+    params:
+        t_db="aln/{basename}/cat"
+    log: "log/aln/kma1_index_{basename}.log"
+    # The pipeline is very sensitive to the value of k here.
+    # Too low means the mapping is excruciatingly slow,
+    # too high results in poor mapping quality.
+    # k = 10 might be a little on the low side.
+    shell: "kma index -k 10 -i {input} -o {params.t_db} 2> {log}"
 
+if IS_ILLUMINA:
     rule first_kma_map:
         input:
             fw=rules.fastp.output.fw,
@@ -223,36 +225,29 @@ if IS_ILLUMINA:
         run:
             shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
             "-t {threads} -1t1 -gapopen -5 -nf -matrix 2> {log}")
-    
-    rule copy_assembly:
-        input: rules.first_kma_map.output.fsa
-        output: "aln/{basename}/cat.untrimmed.fna"
-        shell: "cp {input} {output}"
 
 elif IS_NANOPORE:
-    rule medaka:
-        input: 
+    rule first_kma_map:
+        input:
             reads=rules.fastp.output.reads,
-            draft="aln/{basename}/cat.fna"
-        output: "aln/{basename}/medaka"
-        log: "log/aln/medaka_{basename}.log"
-        threads: 2
+            index=rules.first_kma_index.output,
+        output:
+            res="aln/{basename}/kma1.res",
+            fsa="aln/{basename}/kma1.fsa",
+            mat="aln/{basename}/kma1.mat.gz",
         params:
-            model=lambda wc: "r941_min_high_g360" if PORE == 9 else "r103_min_high_g360"
-        shell: 
-            "medaka_consensus -i {input.reads} -d {input.draft} -o {output} -t {threads} "
-            "-m {params.model}"
-
-    rule copy_assembly:
-        input: rules.medaka.output
-        output: "aln/{basename}/cat.untrimmed.fna"
-        shell: "cp {input}/consensus.fasta {output}"
-
+            db="aln/{basename}/cat",
+            outbase="aln/{basename}/kma1",
+        log: "log/aln/kma1_map_{basename}.log"
+        threads: 2
+        run:
+            shell("kma -i {input.reads} -o {params.outbase} -t_db {params.db} "
+            "-t {threads} -1t1 -bcNano -nf -matrix 2> {log}")
 
 # Both platforms
 rule remove_primers:
     input:
-        con=rules.copy_assembly.output,
+        con=rules.first_kma_map.output.fsa,
         primers=f"{SNAKEDIR}/ref/primers.fna"
     output: temp("aln/{basename}/cat.trimmed.fna")
     log: "log/consensus/remove_primers_{basename}.txt"
@@ -301,23 +296,53 @@ if IS_ILLUMINA:
             shell("kma -ipe {input.fw} {input.rv} -o {params.outbase} -t_db {params.db} "
             "-t {threads} -1t1 -gapopen -5 -nf -matrix 2> {log}")
 
-### Both platforms
-rule create_report:
-    input:
-        matrix=expand("aln/{basename}/kma1.mat.gz", basename=BASENAMES),
-        assembly=expand("aln/{basename}/kma2.fsa", basename=BASENAMES),
-        res=expand("aln/{basename}/kma2.res", basename=BASENAMES)
-    output:
-        consensus=expand("consensus/{basename}/{type}.{nuc}",
-            basename=BASENAMES, type=["consensus", "curated"], nuc=["fna", "faa"]
-        ),
-        report="report.txt",
-        depths=expand("depths/{basename}.pdf", basename=BASENAMES)
-    params:
-        juliacmd=JULIA_COMMAND,
-        scriptpath=f"{SNAKEDIR}/scripts/InfluenzaReport/src/InfluenzaReport.jl",
-        refdir=REFSEQDIR
-    log: "log/report.txt"
-    threads: workflow.cores
-    run:
-        shell(f"{params.juliacmd} -t {threads} {params.scriptpath} . {params.refdir} > {log}")
+    rule create_report:
+        input:
+            matrix=expand("aln/{basename}/kma1.mat.gz", basename=BASENAMES),
+            assembly=expand("aln/{basename}/kma2.fsa", basename=BASENAMES),
+            res=expand("aln/{basename}/kma2.res", basename=BASENAMES)
+        output:
+            consensus=expand("consensus/{basename}/{type}.{nuc}",
+                basename=BASENAMES, type=["consensus", "curated"], nuc=["fna", "faa"]
+            ),
+            report="report.txt",
+            depths=expand("depths/{basename}.pdf", basename=BASENAMES)
+        params:
+            juliacmd=JULIA_COMMAND,
+            scriptpath=f"{SNAKEDIR}/scripts/InfluenzaReport/src/InfluenzaReport.jl",
+            refdir=REFSEQDIR
+        log: "log/report.txt"
+        threads: workflow.cores
+        run:
+            shell(f"{params.juliacmd} -t {threads} {params.scriptpath} illumina . {params.refdir} > {log}")
+
+elif IS_NANOPORE:
+    rule medaka:
+        input: 
+            reads=rules.fastp.output.reads,
+            draft=rules.remove_primers.output
+        output: directory("aln/{basename}/medaka")
+        log: "log/aln/medaka_{basename}.log"
+        threads: 2
+        params:
+            model=lambda wc: "r941_min_high_g360" if PORE == 9 else "r103_min_high_g360"
+        shell: 
+            "medaka_consensus -i {input.reads} -d {input.draft} -o {output} -t {threads} "
+            "-m {params.model} 2> {log}"
+
+    rule create_report:
+        input:
+            assembly=expand("aln/{basename}/medaka", basename=BASENAMES),
+        output:
+            consensus=expand("consensus/{basename}/{type}.{nuc}",
+                basename=BASENAMES, type=["consensus", "curated"], nuc=["fna", "faa"]
+            ),
+            report="report.txt",
+        params:
+            juliacmd=JULIA_COMMAND,
+            scriptpath=f"{SNAKEDIR}/scripts/InfluenzaReport/src/InfluenzaReport.jl",
+            refdir=REFSEQDIR
+        log: "log/report.txt"
+        threads: workflow.cores
+        run:
+            shell(f"{params.juliacmd} -t {threads} {params.scriptpath} nanopore . {params.refdir} > {log}")

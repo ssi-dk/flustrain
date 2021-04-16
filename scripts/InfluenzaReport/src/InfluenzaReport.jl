@@ -70,20 +70,30 @@ include("report.jl")
 # Actually call the stuff here (else, we import "interactive.jl")
 if abspath(PROGRAM_FILE) == @__FILE__
     # TODO: Add GridIon functionality
-    if length(ARGS) != 2
-        println("Usage: julia InfluenzaReport.jl out_dir ref_dir")
+    if length(ARGS) != 3
+        println("Usage: julia InfluenzaReport.jl platform out_dir ref_dir")
         exit(1)
     end
-
-    outdir = first(ARGS)
-    refdir = last(ARGS)
+    platform, outdir, refdir = ARGS
+    illumina = if platform == "illumina"
+        true
+    elseif platform == "nanopore"
+        false
+    else
+        println("Platform must be \"illumina\" or \"nanopore\"")
+        exit(1)
+    end
 
     reportpath = joinpath(outdir, "report.txt")
     alndir = joinpath(outdir, "aln")
     consdir = joinpath(outdir, "consensus")
-    plotdir = joinpath(outdir, "depths")
-
-    illumina_snakemake_entrypoint(reportpath, refdir, alndir, consdir, plotdir)
+    
+    if illumina
+        plotdir = joinpath(outdir, "depths")
+        illumina_snakemake_entrypoint(reportpath, refdir, alndir, consdir, plotdir)
+    else
+        nanopore_snakemake_entrypoint(reportpath, refdir, alndir, consdir)
+    end
 else
     include("interactive.jl")
 end

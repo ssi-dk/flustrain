@@ -335,21 +335,21 @@ function filter_segment_data!(segment_data::Dict{String, SegmentData})
     filter!(segment_data) do (name, data)
         !is_error(data.seq[])
     end
-    println("Removed $(len - length(segment_data)) sequences")
+    println("No nuc sequence: Removed $(len - length(segment_data)) sequences")
     len = length(segment_data)
 
     # Must be a minimum number of ORFs depending on segment an inf A/B
     filter!(segment_data) do (name, data)
         contains_minimum_proteins(data)
     end
-    println("Removed $(len - length(segment_data)) sequences")
+    println("Minimum ORFs: Removed $(len - length(segment_data)) sequences")
     len = length(segment_data)
 
     # Must not be more than 4 ambiguous bases
     filter!(segment_data) do (name, data)
         count(isambiguous, unwrap(data.seq[])) < 5
     end
-    println("Removed $(len - length(segment_data)) sequences")
+    println("Ambiguous bases: Removed $(len - length(segment_data)) sequences")
     len = length(segment_data)
 
     # Filter for outliers of lengths
@@ -357,14 +357,21 @@ function filter_segment_data!(segment_data::Dict{String, SegmentData})
     filter!(segment_data) do (name, data)
         has_acceptable_seq_length(data)
     end
-    println("Removed $(len - length(segment_data)) sequences")
+    println("Nucleotide lengths: Removed $(len - length(segment_data)) sequences")
+    len = length(segment_data)
+
+    # Filter for outliers of lengths of proteins
+    filter!(segment_data) do (name, data)
+        has_acceptable_orf_length(data)
+    end
+    println("ORF lengths: Removed $(len - length(segment_data)) sequences")
     len = length(segment_data)
 
     # All ORFs can be translated and has stop exactly at end
     filter!(segment_data) do (name, data)
         is_all_translatable(data)
     end
-    println("Removed $(len - length(segment_data)) sequences")
+    println("Translation: Removed $(len - length(segment_data)) sequences")
     len = length(segment_data)
 
     @assert n_human == count(v -> v.host == human, values(segment_data))
@@ -372,29 +379,33 @@ function filter_segment_data!(segment_data::Dict{String, SegmentData})
     return segment_data
 end
 
+isalpha(x::SubType) = x.data isa SubTypes.InfluenzaA
+isbeta(x::SubType) = x.data isa Union{SubTypes.Victoria, SubTypes.Yamagata}
+
 function contains_minimum_proteins(data::SegmentData)::Bool
-    n_proteins = length(data.proteins)
-    if data.segment in (Segments.PB2, Segments.PB1, Segments.HA, Segments.NP)
-        return !iszero(n_proteins)
+    segment = data.segment
+    subtype = data.subtype
+    minimum = if segment == Segments.PB2
+        (Proteins.PB2,)
+    elseif segment == Segments.PB1
+        (Proteins.PB1,)
+    elseif segment == Segments.PA
+        (Proteins.PA,)
+    elseif segment == Segments.HA
+        (Proteins.HA,)
+    elseif segment == Segments.NP
+        (Proteins.NP,)
+    elseif segment == Segments.NA
+        # NB is auxilliary
+        (Proteins.NA,)
+    elseif segment == Segments.MP
+        isalpha(subtype) ? (Proteins.M1, Proteins.M2) : (Proteins.M1, Proteins.BM2)
+    elseif segment == Segments.NS
+        (Proteins.NS1, Proteins.NEP)
     end
-    if data.segment == Segments.NA
-        return n_proteins ≥ if data.subtype.data isa SubTypes.InfluenzaA
-            1
-        else
-            2
-        end
+    return !any(minimum) do protein
+        isnothing(findfirst(i -> i.variant == protein) for i in data.proteins)
     end
-    if data.segment in (Segments.MP, Segments.NS)
-        return n_proteins ≥ 2
-    end
-    if data.segment == Segments.PA
-        return n_proteins ≥ if data.subtype.data isa SubTypes.InfluenzaA
-            2
-        else
-            1
-        end
-    end
-    @assert false "Unreachable"
 end
 
 # This has been empirially determined by looking at the distributions
@@ -414,6 +425,42 @@ function has_acceptable_seq_length(data::SegmentData)::Bool
     # The sizes for influenza B are a little different.
     data.subtype.data isa Union{SubTypes.Victoria, SubTypes.Yamagata} && return true
     length(unwrap(data.seq[])) in ACCEPTABLE_SEGMENT_LENGTHS[data.segment]
+end
+
+# This is pretty lax, so can be tightened later. It's just to remove
+# obvious annotation errors.
+const ACCEPTABLE_ORF_LENGTHS = Dict(
+    Proteins.PB2 => 2250:2400,
+    Proteins.PB1 => 2200:2400,
+    Proteins.N40 => nothing, # nothings mean too little data to know range
+    Proteins.PB1F2 => 0:350, # often truncated in real viruses
+    Proteins.PA => 2100:2250,
+    Proteins.PAX => 600:800,
+    Proteins.HA => 1600:1800,
+    Proteins.NP => 1450:1550,
+    Proteins.NA => 1300:1450,
+    Proteins.NB => nothing,
+    Proteins.M1 => 720:780,
+    Proteins.M2 => 250:325,
+    Proteins.BM2 => nothing,
+    Proteins.M42 => nothing,
+    Proteins.NS1 => 600:750,
+    Proteins.NEP => 325:400,
+    Proteins.NS3 => nothing
+)
+
+# Yeah, some of these ORFs are _clearly_ not good enough.
+function has_acceptable_orf_length(data::SegmentData)::Bool
+    data.subtype.data isa Union{SubTypes.Victoria, SubTypes.Yamagata} && return true
+    
+    for protein in data.proteins
+        len = sum(length, protein.orfs)
+        range = ACCEPTABLE_ORF_LENGTHS[protein.variant]
+        if range !== nothing && !(len in range)
+            return false
+        end
+    end
+    return true
 end
 
 function is_all_translatable(data::SegmentData)::Bool

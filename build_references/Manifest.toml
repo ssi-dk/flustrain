@@ -42,7 +42,9 @@ version = "0.1.0"
 
 [[BioSequences]]
 deps = ["BioGenerics", "BioSymbols", "Combinatorics", "IndexableBitVectors", "Printf", "Random", "StableRNGs", "Twiddle"]
-path = "/Users/jakobnissen/code/BioSequences.jl/"
+git-tree-sha1 = "d27f613acb070eb00fcf8a469c3ff954223f9310"
+repo-rev = "master"
+repo-url = "/Users/jakobnissen/code/BioSequences.jl"
 uuid = "7e6ae17a-c86d-528c-b3b9-7f778a29fe59"
 version = "2.0.5"
 

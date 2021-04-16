@@ -265,3 +265,47 @@ function illumina_snakemake_entrypoint(
     write_consensus(cons_dir, basenames, maybe_refasm_tuples)
     return nothing
 end
+
+function nanopore_snakemake_entrypoint(
+    report_path::AbstractString, # output report
+    ref_dir::AbstractString, # dir of .fna + .jls ref files
+    aln_dir::AbstractString, # dir of medaka / kma aln
+    cons_dir::AbstractString,
+)::Nothing
+    basenames = sort!(readdir(aln_dir))
+
+    # Load assemblies
+    maybe_asm_tuples = basenames |> Map() do basename
+        load_assembly(joinpath(aln_dir, basename, "medaka/consensus.fasta"), false)
+    end |> Folds.collect
+
+    # Get references
+    maybe_ref_tuples = load_references(maybe_asm_tuples, ref_dir)
+
+    # Merge assemblies and references to maybe_refasms.
+    maybe_refasm_tuples = zip(maybe_asm_tuples, maybe_ref_tuples) |> 
+    Map() do (maybe_asm_tuple, maybe_ref_tuple)
+        ntuple = SegmentTuple(zip(maybe_asm_tuple, maybe_ref_tuple))
+        map(ntuple) do (maybe_asm, maybe_ref)
+            (is_error(maybe_asm) || is_error(maybe_ref)) && return none(ReferenceAssembly)
+            some(ReferenceAssembly(unwrap(maybe_ref), unwrap(maybe_asm)))
+        end
+    end |> Folds.collect
+
+    # Extra data:
+    extras = [ntuple(i -> Dict{String, Any}(), N_SEGMENTS) for i in basenames]
+
+    # Get segment report lines
+    basename_reports = zip(maybe_refasm_tuples, extras) |> Map() do (maybe_refasm_tup, extra_tup)
+        basename_report_lines(maybe_refasm_tup, extra_tup)
+    end |> Folds.collect
+
+    # Create report itself
+    open(report_path, "w") do io
+        write_report(io, basenames, basename_reports)
+    end
+    
+    # Write out consensus
+    write_consensus(cons_dir, basenames, maybe_refasm_tuples)
+    return nothing
+end

@@ -1,13 +1,10 @@
 # In this script, it gathers all SPA hits, then creates new indexable
 # FASTA files for each basename based on what segments is SPA aligns to
 
+using InfluenzaCore
 using ErrorTypes
 using FASTX
 using BioSequences
-
-@enum Segment::UInt8 PB1 PB2 PA HA NP NA MP NS
-const _STR_SEGMENT = Dict(map(i -> string(i)=>i, instances(Segment)))
-Segment(s::AbstractString) = get(() -> error("Unknown segment: \"$(s)\""), _STR_SEGMENT, s)
 
 imap(f) = x -> Iterators.map(f, x)
 ifilter(f) = x -> Iterators.filter(f, x)
