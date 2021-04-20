@@ -220,4 +220,26 @@
 221	379	CDS		
 			product	putative PB1-F2 protein
 			gene	PB1-F2
+
+===================================================================    
+>Feature S-10704-2_S2_L001_HA|swine|HA|H1N1|2021|S-10704-2_S2_L001|
+21	1715	gene		
+			gene	HA
+21	1715	CDS		
+			product	hemagglutinin
+			function	receptor binding and fusion protein
+			gene	HA
+21	71	sig_peptide
+72	1046	mat_peptide
+			product HA1
+1047	1712	mat_peptide
+			product HA2
+    
+===================================================================
+>Feature S-10704-2_S2_L001_NP|swine|NP|H1N2|2021|S-10704-2_S2_L001|
+34	1530	gene		
+			gene	NP
+34	1530	CDS		
+			product	nucleocapsid protein
+			gene	NP
     

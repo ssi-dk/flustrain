@@ -9,14 +9,28 @@ using BioSequences
 imap(f) = x -> Iterators.map(f, x)
 ifilter(f) = x -> Iterators.filter(f, x)
 
-# Gets the first column of the second line, or None if there is only the header
-# (i.e. no good matches)
+"Get the highest query coverage if template coverage > 70%, else highest template coverage.
+The idea is that if template coverage is 70%, then it's good enough to build an assembly,
+and ultimately, query coverage will dominate the consensus anyway. Furthermore, small
+levels of contamination will throw off template coverage, but not query coverage."
 function readspa(path::AbstractString)::Option{UInt}
+    headerstart = "#Template\tNum\tScore\tExpected\tTemplate_length\tQuery_Coverage\tTemplate_Coverage"
     open(path) do file
-        lines = eachline(file) |> imap(strip) |> ifilter(!isempty) |> imap(x -> split(x, '\t'))
-        fields = zip(lines, 1:2) |> imap(first) |> collect
-        @assert fields[1][1:2] == ["#Template", "Num"]
-        length(fields) < 2 ? none : some(parse(UInt, fields[2][2]))
+        lines = eachline(file) |> imap(strip) |> ifilter(!isempty)
+        header, _ = iterate(lines)::Tuple{Any, Any}
+        @assert startswith(header, headerstart)
+        fieldvector = map(x -> split(x, '\t'), lines)
+        isempty(fieldvector) && return none
+        bestnum, besttcov, bestqcov = UInt(0), 0.0, 0.0
+        for fields in fieldvector
+            qcov, tcov = parse(Float64, fields[6]) / 100, parse(Float64, fields[7]) / 100
+            num = parse(UInt, fields[2])
+            if (besttcov > 0.7 && qcov > bestqcov) || (besttcov ≤ 0.7 && tcov > besttcov)
+                bestnum, besttcov, bestqcov = num, tcov, qcov
+            end
+        end
+        @assert !iszero(bestnum)
+        return some(bestnum)
     end
 end
 

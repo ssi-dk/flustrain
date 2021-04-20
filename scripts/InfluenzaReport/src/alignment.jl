@@ -82,7 +82,12 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
             push!(nucleotides, seg_nt)
             if !iszero(n_deletions)
                 if !iszero(n_deletions % 3)
-                    push!(indel_messages, ErrorMessage(is_important(protein.var) ? important : trivial,
+                    severity = if is_important(protein.var) && ref_pos < last_ref_pos - 10
+                        important
+                    else
+                        trivial
+                    end
+                    push!(indel_messages, ErrorMessage(severity,
                         "$(protein.var) frameshift deletion of $n_deletions bases b/w bases $(seg_pos-1)-$(seg_pos)"))
                 else
                     # We accept 7 aas deleted, but not more
@@ -99,7 +104,12 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
         else
             if !iszero(n_insertions)
                 if !iszero(n_insertions % 3)
-                    push!(indel_messages, ErrorMessage(is_important(protein.var) ? important : trivial,
+                    severity = if is_important(protein.var) && ref_pos < last_ref_pos - 10
+                        important
+                    else
+                        trivial
+                    end
+                    push!(indel_messages, ErrorMessage(severity,
                         "$(protein.var) frameshift insertion of bases $(seg_pos-n_insertions)-$(seg_pos-1)"))
                 else
                     # 12 aa insertions are OK, more must be a nonfunctional mutant
