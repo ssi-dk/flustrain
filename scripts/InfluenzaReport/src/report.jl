@@ -16,6 +16,7 @@ function ReferenceAssembly(ref::Reference, asm::Assembly)
 
     # For optimization: The large majority of time is spent on this alignment
     aln = pairalign(OverlapAlignment(), asm.seq, ref.seq, DEFAULT_DNA_ALN_MODEL).aln
+    @assert aln !== nothing
     identity = unwrap(alignment_identity(aln))
     orfdata = map(ref.proteins) do protein
         ORFData(protein, aln, ref)
@@ -31,14 +32,14 @@ function ReferenceAssembly(ref::Reference, asm::Assembly)
     n_insignificant = count(asm.insignificant)
     if !iszero(n_insignificant)
         severity = n_insignificant > 4 ? important : trivial
-        push!(messages, ErrorMessage(severity, "$n_insignificant bases insignificantly called"))
+        push!(messages, ErrorMessage(severity, "$n_insignificant cental bases insignificantly called"))
     end
 
     # Ambiguous bases
     n_amb = count(isambiguous, asm.seq)
     if !iszero(n_amb)
         severity = n_amb > 4 ? important : trivial
-        push!(messages, ErrorMessage(severity, "$n_amb central bases insignificantly called"))
+        push!(messages, ErrorMessage(severity, "$n_amb central bases ambiguous"))
     end
 
     ReferenceAssembly(asm.segment, ref.seq, asm.seq, asm.insignificant, aln,
@@ -271,6 +272,7 @@ function nanopore_snakemake_entrypoint(
     ref_dir::AbstractString, # dir of .fna + .jls ref files
     aln_dir::AbstractString, # dir of medaka / kma aln
     cons_dir::AbstractString,
+    depths_plot_dir::AbstractString
 )::Nothing
     basenames = sort!(readdir(aln_dir))
 
@@ -294,6 +296,34 @@ function nanopore_snakemake_entrypoint(
 
     # Extra data:
     extras = [ntuple(i -> Dict{String, Any}(), N_SEGMENTS) for i in basenames]
+
+    # Extra: Add depth (and plot it!)
+    isdir(depths_plot_dir) || mkdir(depths_plot_dir)
+    for (basename, dict_tuple) in zip(basenames, extras)
+        depths_matrices = from_mat(joinpath(aln_dir, basename, "kma1.mat.gz"))
+        depths = map(depths_matrices) do maybe_matrix
+            and_then(depths_from_mat, Depths, maybe_matrix)
+        end
+
+        # Plot depths
+        plot_depths(joinpath(depths_plot_dir, basename * ".pdf"), depths)
+
+        # Add depth info to extra dict
+        for (dict, maybe_depth) in zip(dict_tuple, depths)
+            if !is_error(maybe_depth)
+                dict["depths"] = unwrap(maybe_depth)
+            end
+        end
+
+        # Add in information for superinfection
+        for (dict, maybe_matrix) in zip(dict_tuple, depths_matrices)
+            if !is_error(maybe_matrix)
+                if is_superinfected(unwrap(maybe_matrix))
+                    dict["superinfection"] = [ErrorMessage(trivial, "[ POSSIBLE SUPERINFECTION ]")]
+                end
+            end
+        end
+    end
 
     # Get segment report lines
     basename_reports = zip(maybe_refasm_tuples, extras) |> Map() do (maybe_refasm_tup, extra_tup)

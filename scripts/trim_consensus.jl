@@ -32,7 +32,7 @@ function slide!(primer::NucleotideSeq, seq::NucleotideSeq, minlen::Int, fuzzylen
     length(seq) < length(primer) && return 0
     primer = copy(primer)
     seq = copy(seq)[1:length(primer)]
-    length(primer) == length(seq) || throw(ArgumentError("Must match in lengths"))
+    @assert length(primer) == length(seq)
     for overlap in length(primer):-1:minlen
         maxerrs = ifelse(overlap < fuzzylen, 0, 1)
         is_possibility(primer, seq, maxerrs) && return overlap

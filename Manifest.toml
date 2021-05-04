@@ -54,7 +54,7 @@ version = "2.0.5"
 
 [[BioSymbols]]
 deps = ["Automa"]
-path = "/Users/jakobnissen/code/BioSymbols.jl"
+git-tree-sha1 = "ec77888ac3e78f9d372c2b533bdb52668f9e2b09"
 uuid = "3c28c6f8-a34d-59c4-9654-267d177fcfa9"
 version = "4.0.4"
 
@@ -672,6 +672,14 @@ deps = ["Dates"]
 git-tree-sha1 = "ad4b278adb62d185bbcb6864dc24959ab0627bf6"
 uuid = "6c6a2e73-6563-6170-7368-637461726353"
 version = "1.0.3"
+
+[[SequenceVariation]]
+deps = ["BioAlignments", "BioSequences", "BioSymbols", "SumTypes"]
+git-tree-sha1 = "960e246355ea8fd01b4df998787011811fff66bc"
+repo-rev = "master"
+repo-url = "/Users/jakobnissen/code/SequenceVariation.jl"
+uuid = "eef6e190-9969-4f06-a38f-35a110a8fdc8"
+version = "0.1.0"
 
 [[Serialization]]
 uuid = "9e88b42a-f829-5b0c-bbe9-9e923198166b"

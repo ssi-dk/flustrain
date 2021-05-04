@@ -19,18 +19,15 @@ function readspa(path::AbstractString)::Option{UInt}
         lines = eachline(file) |> imap(strip) |> ifilter(!isempty)
         header, _ = iterate(lines)::Tuple{Any, Any}
         @assert startswith(header, headerstart)
-        fieldvector = map(x -> split(x, '\t'), lines)
-        isempty(fieldvector) && return none
-        bestnum, besttcov, bestqcov = UInt(0), 0.0, 0.0
-        for fields in fieldvector
-            qcov, tcov = parse(Float64, fields[6]) / 100, parse(Float64, fields[7]) / 100
+        tuples = lines |> imap() do line
+            fields = split(line, '\t')
             num = parse(UInt, fields[2])
-            if (besttcov > 0.7 && qcov > bestqcov) || (besttcov ≤ 0.7 && tcov > besttcov)
-                bestnum, besttcov, bestqcov = num, tcov, qcov
-            end
-        end
-        @assert !iszero(bestnum)
-        return some(bestnum)
+            qcov = parse(Float64, fields[6]) / 100
+            tcov = parse(Float64, fields[7]) / 100
+            (; qcov, tcov, num)
+        end |> collect
+        isbetter(a, b) = min(a.tcov, b.tcov) > 0.7 ? (a.qcov > b.qcov) : (a.tcov > b.tcov)
+        isempty(tuples) ? none : some(first(sort!(tuples, lt=isbetter)).num)
     end
 end
 

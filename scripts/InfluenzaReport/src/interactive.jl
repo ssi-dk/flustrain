@@ -5,8 +5,7 @@ REFDIR = "/Users/jakobnissen/Documents/ssi/projects/flupipe/ref/seqs"
     manual_check(::Segment, ::LongDNASeq; refdir=[preset])
 
 Checks a segment sequence by BLASTing it to a collection of references.
-Returns a (ReferenceAssembly, Vector{String}) result, with the strings being
-the lines would be in a flupipe report.
+Returns a vector of ReferenceAssembly.
 
 Note that this approach is fairly inefficient, and should probably not be used in
 a loop unless you want your CPU to keep you warm in the winter.
@@ -31,7 +30,7 @@ function manual_check(segment::Segment, seqs, refdir::String=REFDIR)
     best_hits = open(outfile) do file
         x = parse_blastout(file, 0.9)
         len = length(x)
-        d = Dict(parse(Int, k) => expect(v, "No good hits found") for (k,v) in x)
+        d = Dict(parse(Int, k) => expect(v, "No good hits found for seq number $k") for (k,v) in x)
         @assert length(d) == len
         return d
     end

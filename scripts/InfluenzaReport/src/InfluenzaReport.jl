@@ -87,12 +87,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
     reportpath = joinpath(outdir, "report.txt")
     alndir = joinpath(outdir, "aln")
     consdir = joinpath(outdir, "consensus")
+    plotdir = joinpath(outdir, "depths")
     
     if illumina
-        plotdir = joinpath(outdir, "depths")
         illumina_snakemake_entrypoint(reportpath, refdir, alndir, consdir, plotdir)
     else
-        nanopore_snakemake_entrypoint(reportpath, refdir, alndir, consdir)
+        nanopore_snakemake_entrypoint(reportpath, refdir, alndir, consdir, plotdir)
     end
 else
     include("interactive.jl")

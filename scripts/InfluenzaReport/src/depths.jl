@@ -89,6 +89,58 @@ function split_matrix(m::AbstractMatrix{<:Integer})
     top, bottom
 end
 
+#=
+function split_matrix(m::AbstractMatrix{<:Integer})
+    @assert size(m, 1) == 4 "Must have 4 rows for nucleotides A, C, G and T."
+
+    # A site is a "minority variant" if it is the 2nd most commonly called nucleotide,
+    # it has a depth > 10, is at least 0.1 of the major variant's depth, and at least
+    # 0.5 of last minor variant base depth.
+    top_deps = Vector{eltype(m)}(undef, size(m, 2))
+    bottom_deps = similar(top_dep)
+    top_seq, bottom_seq = DNA[], DNA[]
+    last_bottom_dep = nothing
+    bases_since_bottom = 0
+    indexbuffer = zeros(Int, 4)
+    BASES = (DNA_A, DNA_C, DNA_G, DNA_T)
+    for col in 1:size(m, 2)
+        top_index, bottom_index = sortperm!(indexbuffer, view(m, :, col), rev=true)
+        top_dep, bottom_dep = m[top_index, col], m[bottom_index, col]
+        top_base, bottom_base = BASES[top_index], BASES[bottom_index]
+
+        if (
+            bottom_dep ≥ 10 &&
+            bottom_dep ≥ 0.1 * top_dep &&
+            last_bottom_dep === nothing || bottom_dep ≥ 0.5 * last_bottom_dep
+        )
+            bases_since_bottom = 0
+            last_bottom_dep = bottom_dep
+        else
+            bases_since_bottom += 1
+        end
+
+
+
+
+
+    top, bottom = Vector{eltype(m)}(undef, size(m, 2)), Vector{eltype(m)}(undef, size(m, 2))
+    bottomi, topi = nothing, zero(eltype(m))
+    delta_max = 2.0
+    v = zeros(eltype(m), size(m, 2))
+    for col in 1:size(m, 2)
+        topy, bottomy = sort!(copyto!(v, view(m, :, col)), rev=true)
+        if bottomi === nothing || max(bottomy, bottomi) / min(bottomy, bottomi) < delta_max
+            bottomi = bottomy
+            topi = topy
+        end
+        bottom[col] = bottomi
+        top[col] = topi
+        bottomi = ifelse(bottomi < 10, nothing, bottomi)
+    end
+    top, bottom
+end
+=#
+
 "This is far from certain - it just gives a hint. Takes the matrix from from_mat"
 function is_superinfected(m::AbstractMatrix{<:Integer})
     top, bottom = split_matrix(m)

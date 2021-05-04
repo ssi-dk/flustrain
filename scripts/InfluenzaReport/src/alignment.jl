@@ -25,6 +25,7 @@ function ORFData(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, LongDNA
     # Last 3 nts are the stop codon
     refaa = BioSequences.translate(LongDNASeq(collect(ref_aas)[1:end-3]))
     aaaln = pairalign(GlobalAlignment(), aaseq, refaa, DEFAULT_AA_ALN_MODEL).aln
+    @assert aaaln !== nothing
     identity = alignment_identity(aaaln)
     ORFData(protein.var, orfseq, aaseq, orfs, identity, messages)
 end
@@ -44,9 +45,10 @@ and the referece segment that contains that protein.
 function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, LongDNASeq}
 )::Tuple{LongDNASeq, Vector{UnitRange{UInt16}}, Vector{ErrorMessage}}
     nucleotides = DNA[]
-    last_ref_pos = findlast(protein.mask)
+    last_ref_pos = findlast(protein.mask)::Int
     codon = mer"AAA" # arbitrary starting codon
     seg_pos = ref_pos = n_deletions = n_insertions = 0
+    fiveprime_truncated = 0
     maybe_expected_stop = none(Int)
     # indel messages are special because we choose to skip if there are too many
     messages, indel_messages = ErrorMessage[], ErrorMessage[]
@@ -56,6 +58,17 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
         seg_pos += (seg_nt !== DNA_Gap)
         ref_pos += (ref_nt !== DNA_Gap)
         is_coding = !iszero(ref_pos) && protein.mask[ref_pos]
+
+        # Check for 5' truncation
+        if iszero(seg_pos)
+            fiveprime_truncated += is_coding
+        else
+            if !iszero(fiveprime_truncated)
+                push!(messages, ErrorMessage(important,
+                    "Deletion of $(fiveprime_truncated) bases at 5' end of $(protein.var)"))
+            end
+            fiveprime_truncated = 0
+        end
 
         if is_coding
             if (orfstart === nothing) & (seg_nt !== DNA_Gap)

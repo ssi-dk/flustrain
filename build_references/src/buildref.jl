@@ -374,6 +374,8 @@ function filter_segment_data!(segment_data::Dict{String, SegmentData})
     println("Translation: Removed $(len - length(segment_data)) sequences")
     len = length(segment_data)
 
+    # All our human sequences should be good quality, so if we filtered away
+    # any human sequences, we did something wrong.
     @assert n_human == count(v -> v.host == human, values(segment_data))
     
     return segment_data
@@ -404,7 +406,7 @@ function contains_minimum_proteins(data::SegmentData)::Bool
         (Proteins.NS1, Proteins.NEP)
     end
     return !any(minimum) do protein
-        isnothing(findfirst(i -> i.variant == protein) for i in data.proteins)
+        isnothing(findfirst(i -> i.variant == protein, data.proteins))
     end
 end
 
