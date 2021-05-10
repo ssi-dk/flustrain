@@ -243,3 +243,18 @@
 			product	nucleocapsid protein
 			gene	NP
     
+===================================================================
+>Feature S-18806-1-02_S7_L001_MP|avian|MP|H1N1|2021|S-18806-1-02_S7_L001|
+14	772	gene		
+			gene	M1
+14	772	CDS		
+			product	matrix protein 1
+			protein_id	S-18806-1-02_S7_L001_MP|avian|MP|H1N1|2021|S-18806-1-02_S7_L001|p1
+			gene	M1
+14	995	gene		
+			gene	M2
+14	39	CDS		
+728	995			
+			product	matrix protein 2
+			protein_id	S-18806-1-02_S7_L001_MP|avian|MP|H1N1|2021|S-18806-1-02_S7_L001|p2
+			gene	M2

@@ -305,7 +305,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
         println("Usage: julia phylogeny.jl outdir refoutdir refdir consensusdir")
         exit(1)
     else
-        main(ARGS...)
+        main(map(Path, ARGS)...)
     end
 end
 

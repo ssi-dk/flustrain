@@ -57,6 +57,9 @@ function main()
     # These ones are deduplicated
     add_extra_records!(segment_data, joinpath("raw", "annotation.extra.tbl"), joinpath("raw", "seqs.extra.fna"), true)
 
+    # Remove sequencing artifacts beyond the true termini of influenza sequences.
+    strip_false_termini!(segment_data)
+
     # Series of filters on the SegmentData
     filter_segment_data!(segment_data)
 
@@ -470,6 +473,10 @@ function is_all_translatable(data::SegmentData)::Bool
     aa_sequence = LongAminoAcidSeq()
     nt_sequence = LongDNASeq()
     for protein in data.proteins
+        if any(last(orf) > length(seq) for orf in protein.orfs)
+            println(data.id)
+            error()
+        end
         join!(nt_sequence, (@view(seq[orf]) for orf in protein.orfs))
 
         # Must have a length divisible by 3
@@ -629,6 +636,64 @@ function parse_annot_segment_data!(
     records
 end
 
+##=
+# Some reference sequences are too long. True influenza sequences ends with CTTGTTTCTACT
+# and begins with AGCAAAAGCAGG. (with perhaps a single substitution.) We can
+# allow sequences that do not include these ends, but we cannot allow sequences
+# that include artifacts flanking these true termini.
+# Example: KJ476677 contains 19 bp 3' of true 3' terminal.
+function strip_false_termini!(data::Dict{String, SegmentData})
+    toremove = Set{String}() # we remove these keys
+    n_stripped = 0
+    for (id, segment_data) in data
+        false_termini =  false_termini_length(segment_data)
+        false_termini === nothing && continue
+        trim5, trim3 = false_termini
+        iszero(trim5) && iszero(trim3) && continue
+        seqlen = UInt16(length(unwrap(segment_data.seq[])))
+        segment_data.seq[] = some(unwrap(segment_data.seq[])[trim5+1:seqlen-trim3])
+        for (proti, protein) in enumerate(segment_data.proteins), (orfi, orf) in enumerate(protein.orfs)
+            if trim5 ≥ first(orf) || (seqlen - trim3) < last(orf)
+                push!(toremove, id)
+                break
+            else
+                segment_data.proteins[proti].orfs[orfi] = (first(orf) - trim5):(last(orf) - trim5)
+                n_stripped += 1
+            end
+        end
+    end
+    filter!(data) do (k, v)
+        !in(k, toremove)
+    end
+    if !iszero(length(toremove))
+        @warn "Removed $(length(toremove)) segments due to ORFs in false termini"
+    end
+    print("Stripped false termini off $(n_stripped) segment data")
+end
+
+# We allow to strip up to 50 bp in each end off
+function false_termini_length(data::SegmentData)::Union{Nothing, Tuple{UInt16, UInt16}}
+    if is_error(data.seq[])
+        return nothing
+    end
+    seq = unwrap(data.seq[])
+    trim5, trim3 = UInt16(0), UInt16(0)
+    p = approxsearch(seq, dna"AGCAAAAGCAGG", 1)
+    if !isempty(p)
+        if first(p) < 50
+            trim5 = UInt16(first(p) - 1)
+        end
+    end
+    p = approxrsearch(seq, dna"CTTGTTTCTCCT", 1)
+    if !isempty(p)
+        trim3 = UInt16(lastindex(seq) - last(p))
+        if trim3 > 50
+            trim3 = UInt16(0)
+        end
+    end
+    return (trim5, trim3)
+end
+
 "Deduplicate all non-human seqs and add the human ones back"
 function cd_hit_deduplicate(segment_data::Dict{String, SegmentData}
 )::Dict{Segment, Set{String}}
@@ -761,3 +826,5 @@ end
 
 
 isinteractive() || main()
+
+  
