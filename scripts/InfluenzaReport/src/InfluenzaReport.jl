@@ -62,7 +62,6 @@ is_important(x::Protein) = @inbounds _IMPORTANT[reinterpret(UInt8, x) + 0x01]
 include("assembly.jl")
 include("depths.jl")
 include("reference.jl")
-
 include("alignment.jl")
 include("report.jl")
 
@@ -85,7 +84,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     end
 
     reportpath = joinpath(outdir, "report.txt")
-    alndir = joinpath(outdir, "aln")
+    alndir = joinpath(outdir, "tmp/aln")
     consdir = joinpath(outdir, "consensus")
     plotdir = joinpath(outdir, "depths")
     

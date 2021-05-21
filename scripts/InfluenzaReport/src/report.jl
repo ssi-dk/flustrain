@@ -26,7 +26,7 @@ function ReferenceAssembly(ref::Reference, asm::Assembly)
     messages = ErrorMessage[]
     
     # Low identity to reference
-    identity < 0.9 && push!(messages, ErrorMessage(important, "Identity to reference less than 90%"))
+    identity < 0.9 && push!(messages, ErrorMessage(trivial, "Identity to reference less than 90%"))
 
     # Insignificant bases
     n_insignificant = count(asm.insignificant)

@@ -9,19 +9,13 @@ Denne auto-genererede rapport opsummerer alle konsensus-sekvenser, og indeholder
 ### commit.txt
 Denne fil indeholder en kode, angiver versionen af workflowet.
 
-### trim
-Indeholder komprimerede, trimmede og kvalitetskontrollerede reads, samt en statusrapport om readsnes kvalitet.
-
-### aln
-Mappen indeholder information om alignment/assembly til referencerne
+### tmp
+Denne mappe indeholder interne filer fra workflowet som kan bruges til detaljeret fejlfinding.
 
 ### consensus
 Indeholder konsensus-sekvenser
 * Filer, der slutter på ".fna" er nukleotidsekvenser, dem på ".faa" er peptider/proteiner.
 * Filer, der starter med "consensus" er alle konsensus-sekvenser. Dem med "curated" er kun de konsensus-sekvenser, der klarede alle kvalitetskontrol-trin.
-
-### log
-Logfiler fra de forskellige programmer. Kun brugbar til fejlfinding af programmerne.
 
 ### phylogeny
 Automatiske fylogenetiske træer. Kun de "curated" konsensussekvenser er automatisk inkluderede her. Se her for at finde kladebestemmelsen.

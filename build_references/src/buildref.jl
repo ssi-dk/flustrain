@@ -662,28 +662,27 @@ function strip_false_termini!(data::Dict{String, SegmentData})
             end
         end
     end
-    filter!(data) do (k, v)
-        !in(k, toremove)
-    end
     if !iszero(length(toremove))
-        @warn "Removed $(length(toremove)) segments due to ORFs in false termini"
+        filter!(data) do (k, v)
+            !in(k, toremove)
+        end
+        println("Removed $(length(toremove)) segments due to ORFs in false termini")
     end
-    print("Stripped false termini off $(n_stripped) segment data")
+    println("Stripped false termini off $(n_stripped) segment data")
 end
 
 # We allow to strip up to 50 bp in each end off
 function false_termini_length(data::SegmentData)::Union{Nothing, Tuple{UInt16, UInt16}}
-    if is_error(data.seq[])
-        return nothing
-    end
-    seq = unwrap(data.seq[])
+    seq = @unwrap_or data.seq[] (return nothing)
     trim5, trim3 = UInt16(0), UInt16(0)
+    # Find true beginning of sequence, if it's within first 50 bp
     p = approxsearch(seq, dna"AGCAAAAGCAGG", 1)
     if !isempty(p)
         if first(p) < 50
             trim5 = UInt16(first(p) - 1)
         end
     end
+    # Find true end of sequence
     p = approxrsearch(seq, dna"CTTGTTTCTCCT", 1)
     if !isempty(p)
         trim3 = UInt16(lastindex(seq) - last(p))

@@ -152,7 +152,7 @@ version = "1.0.0"
 
 [[Influenza]]
 deps = ["BioAlignments", "BioSequences", "ErrorTypes", "InfluenzaCore"]
-git-tree-sha1 = "e495f87d52fa070224d9450f107e1f7c536cebe1"
+git-tree-sha1 = "fc292f7e18b098eb7e4aeebfc869547f0cf1b7a2"
 repo-rev = "master"
 repo-url = "/Users/jakobnissen/code/Influenza"
 uuid = "094bb4ec-04e4-4f11-bf12-e5749f7dd418"
@@ -160,7 +160,7 @@ version = "0.1.0"
 
 [[InfluenzaCore]]
 deps = ["ErrorTypes", "SumTypes"]
-git-tree-sha1 = "a6be4ea4dd18a66a757e1c647c25e6ece6202e25"
+git-tree-sha1 = "e1e9fc97ac0336289564a1d0f4456a926258a1eb"
 repo-rev = "master"
 repo-subdir = "InfluenzaCore"
 repo-url = "/Users/jakobnissen/code/Influenza"
