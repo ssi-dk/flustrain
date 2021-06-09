@@ -258,3 +258,33 @@
 			product	matrix protein 2
 			protein_id	S-18806-1-02_S7_L001_MP|avian|MP|H1N1|2021|S-18806-1-02_S7_L001|p2
 			gene	M2
+
+===================================================================
+>Feature S-17617-1-01_MP|avian|MP|H5N8|2021|S-17617-1-01|
+14	772	gene		
+			gene	M1
+14	772	CDS		
+			product	matrix protein 1
+			gene	M1
+14	995	gene		
+			gene	M2
+14	39	CDS		
+728	995			
+			product	matrix protein 2
+			gene	M2
+
+===================================================================
+>Feature S-19369-1-02_NS|avian|NS|H5N8|2021|S-19369-1-02|
+15	668	gene		
+			gene	NS1
+15	668	CDS		
+			product	nonstructural protein 1
+			gene	NS1
+15	852	gene		
+			gene	NEP
+			gene_syn	NS2
+15	44	CDS		
+517	852			
+			product	nuclear export protein
+			note	nonstructural protein 2
+			gene	NEP

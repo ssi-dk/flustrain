@@ -121,7 +121,7 @@ if IS_ILLUMINA:
         shell:
             'fastp -i {input.fw} -I {input.rv} '
             '-o {output.fw} -O {output.rv} --html {output.html} --json {output.json} '
-            '--disable_adapter_trimming --trim_poly_g --cut_tail --low_complexity_filter '
+            '--disable_adapter_trimming --trim_poly_g --cut_tail --cut_front --low_complexity_filter '
             '--complexity_threshold 50 --thread {threads} 2> {log}'
 
     rule map_best_template:
@@ -156,8 +156,8 @@ elif IS_NANOPORE:
         shell:
             'fastp -i {input} -o {output.reads} --html {output.html} '
             '--json {output.json} --disable_adapter_trimming  --disable_trim_poly_g '
-            '--cut_window_size 10 --cut_mean_quality 10 --cut_tail --low_complexity_filter  '
-            '--complexity_threshold 40 --length_limit 2400 --length_required 100 '
+            '--cut_window_size 10 --cut_mean_quality 10 --cut_tail --cut-front --low_complexity_filter  '
+            '--complexity_threshold 50 --length_limit 2400 --length_required 100 '
             '--average_qual 12 --thread {threads} 2> {log}'
 
     rule map_best_template:
@@ -275,8 +275,6 @@ if IS_ILLUMINA:
             fw=rules.fastp.output.fw,
             rv=rules.fastp.output.rv,
             index=rules.second_kma_index.output,
-            keepfw="tmp/trim/{basename}/fw.fq.gz",
-            keeprv="tmp/trim/{basename}/rv.fq.gz"
         output:
             res="tmp/aln/{basename}/kma2.res",
             fsa="tmp/aln/{basename}/kma2.fsa",

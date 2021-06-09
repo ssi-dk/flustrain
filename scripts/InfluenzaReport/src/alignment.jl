@@ -182,9 +182,9 @@ function gather_aln(protein::ProteinORF, aln::PairwiseAlignment{LongDNASeq, Long
 
     # Merge indel_msg and messages here
     # If there are too many indel messages, we collapse them
-    if length(indel_messages) > 4
+    if length(indel_messages) > 3
         push!(messages, ErrorMessage(is_important(protein.var) ? important : trivial,
-            "Numerous (>4) indels in $(protein.var)"))
+            "Numerous (>3) indels in $(protein.var)"))
     else
         append!(messages, indel_messages)
     end

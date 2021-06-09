@@ -9,8 +9,8 @@ using BioSequences
 imap(f) = x -> Iterators.map(f, x)
 ifilter(f) = x -> Iterators.filter(f, x)
 
-"Get the highest query coverage if template coverage > 70%, else highest template coverage.
-The idea is that if template coverage is 70%, then it's good enough to build an assembly,
+"Get the highest query coverage if template coverage > 30%, else highest template coverage.
+The idea is that if template coverage is 30%, then it's good enough to build an assembly,
 and ultimately, query coverage will dominate the consensus anyway. Furthermore, small
 levels of contamination will throw off template coverage, but not query coverage."
 function readspa(path::AbstractString)::Option{UInt}
@@ -26,7 +26,7 @@ function readspa(path::AbstractString)::Option{UInt}
             tcov = parse(Float64, fields[7]) / 100
             (; qcov, tcov, num)
         end |> collect
-        isbetter(a, b) = min(a.tcov, b.tcov) > 0.7 ? (a.qcov > b.qcov) : (a.tcov > b.tcov)
+        isbetter(a, b) = min(a.tcov, b.tcov) > 0.3 ? (a.qcov > b.qcov) : (a.tcov > b.tcov)
         isempty(tuples) ? none : some(first(sort!(tuples, lt=isbetter)).num)
     end
 end
