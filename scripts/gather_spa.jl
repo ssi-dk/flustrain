@@ -87,8 +87,11 @@ function collect_sequences(refdir::AbstractString, numdict::Dict{String, Vector{
     return records
 end
 
-function dump_sequences(alndir::AbstractString, numdict::Dict{String, Vector{Tuple{Segment, UInt}}},
-records::Dict{Segment, Dict{UInt, FASTA.Record}})
+function dump_sequences(
+    alndir::AbstractString,
+    numdict::Dict{String, Vector{Tuple{Segment, UInt}}},
+    records::Dict{Segment, Dict{UInt, FASTA.Record}}
+)
     for (basename, vec) in numdict
         writer = open(FASTA.Writer, joinpath(alndir, basename, "cat.fna"))
         for (segment, num) in vec

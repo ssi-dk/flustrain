@@ -50,7 +50,7 @@ function from_mat(matpath::AbstractString)::SegmentTuple{Option{Matrix{UInt32}}}
                 # Headers look like "HEADER_HA"
                 p = findlast(isequal('_'), line)
                 p === nothing && error("Found header \"$(line)\", expected pattern \"HEADER_SEGMENT\"")
-                segment = unwrap(parse(Segment, line[p+1:end]))
+                segment = tryparse(Segment, line[p+1:end])::Segment
                 continue
             end
             split!(fields, line, UInt8('\t'))
@@ -155,7 +155,7 @@ function from_samtools_depth(path::AbstractString)::SegmentTuple{Option{Depths}}
         fields = Vector{SubString{String}}(undef, 3)
         for line in eachline(GzipDecompressorStream(io))
             split!(fields, line, UInt8('\t'))
-            segment = unwrap(parse(Segment, first(fields)[findlast('_', first(fields)) + 1:end]))
+            segment::Segment = tryparse(Segment, first(fields)[findlast('_', first(fields)) + 1:end])
             segment_index = reinterpret(UInt8, segment) + 0x01
             vector = if is_error(result[segment_index])
                 position = 1

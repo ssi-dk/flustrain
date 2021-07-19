@@ -407,6 +407,8 @@ function contains_minimum_proteins(data::SegmentData)::Bool
         isalpha(subtype) ? (Proteins.M1, Proteins.M2) : (Proteins.M1, Proteins.BM2)
     elseif segment == Segments.NS
         (Proteins.NS1, Proteins.NEP)
+    else
+        @assert false "Unreachable!" # This helps inference
     end
     return !any(minimum) do protein
         isnothing(findfirst(i -> i.variant == protein, data.proteins))

@@ -10,7 +10,10 @@ struct Reference
     proteins::Vector{ProteinORF}
 end
 
-function load_references(segment::Segment, refdir::AbstractString, accessions::Set{String}
+function load_references(
+    segment::Segment,
+    refdir::AbstractString,
+    accessions::Set{String},
 )::Dict{String, Reference}
     seqpath = joinpath(refdir, "$segment.fna")
     orfpath = joinpath(refdir, "$segment.jls")

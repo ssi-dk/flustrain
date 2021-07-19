@@ -3,7 +3,7 @@
 
 An `ORFData` object contains protein-specific information from the alignment
 between an influenza segment and a reference segment. Its construction checks for
-sutff lifethe presence of valid reading frames, indels compared to the reference.
+stuff like the presence of valid reading frames, indels compared to the reference.
 
 Construct with `ORFData(::ProteinORF, ::PairwiseAlignment)`.
 """

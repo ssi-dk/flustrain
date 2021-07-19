@@ -156,7 +156,7 @@ elif IS_NANOPORE:
         shell:
             'fastp -i {input} -o {output.reads} --html {output.html} '
             '--json {output.json} --disable_adapter_trimming  --disable_trim_poly_g '
-            '--cut_window_size 10 --cut_mean_quality 10 --cut_tail --cut-front --low_complexity_filter  '
+            '--cut_window_size 10 --cut_mean_quality 10 --cut_tail --cut_front --low_complexity_filter  '
             '--complexity_threshold 50 --length_limit 2400 --length_required 100 '
             '--average_qual 12 --thread {threads} 2> {log}'
 
@@ -325,8 +325,7 @@ elif IS_NANOPORE:
     rule clean_medaka:
         input: rules.medaka.output
         output: "tmp/aln/{basename}/moved.txt"
-        shell:
-            "rm {input}/*.bam {input}/*.bai {input}/*.hdf"
+        shell: "rm {input}/*.bam {input}/*.bai {input}/*.hdf && touch {output}"
 
     rule create_report:
         input:

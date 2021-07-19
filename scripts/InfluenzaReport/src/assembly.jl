@@ -19,7 +19,7 @@ function load_assembly(assemblypath::AbstractString, kma::Bool)::SegmentTuple{Op
                 end
             end
             accession = first(v)
-            segment = unwrap(parse(Segment, v[2]))
+            segment::Segment = tryparse(Segment, v[2])
             segment_index = reinterpret(UInt8, segment) + 0x01
             seq = FASTA.sequence(LongDNASeq, record)
             @assert length(record.sequence) == length(seq)
@@ -45,7 +45,7 @@ function load_kma_file(resfilename::AbstractString)::SegmentTuple{Option{Float64
         result = fill(none(Float64), N_SEGMENTS)
         @assert header == "#Template\tScore\tExpected\tTemplate_length\tTemplate_Identity\tTemplate_Coverage\tQuery_Identity\tQuery_Coverage\tDepth\tq_value\tp_value"
         for fields in lines |> Map(strip) ⨟ Filter(!isempty) ⨟ Map(x -> split!(fields, x, UInt8('\t')))
-            segment = unwrap(parse(Segment, strip(last(rsplit(first(fields), '_', limit=2)))))
+            segment::Segment = tryparse(Segment, strip(last(rsplit(first(fields), '_', limit=2))))
             segment_index = reinterpret(UInt8, segment) + 0x01
             is_error(result[segment_index]) || error("Segment $(string(segment)) present twice in file $resfilename")
             result[segment_index] = some(parse(Float64, fields[5]) / 100)
