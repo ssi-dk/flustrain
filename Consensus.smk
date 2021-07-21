@@ -301,7 +301,7 @@ if IS_ILLUMINA:
             depths=expand("depths/{basename}.pdf", basename=BASENAMES)
         params:
             juliacmd=JULIA_COMMAND,
-            scriptpath=f"{SNAKEDIR}/scripts/InfluenzaReport/src/InfluenzaReport.jl",
+            scriptpath=f"{SNAKEDIR}/scripts/report.jl",
             refdir=REFSEQDIR
         log: "tmp/log/report.txt"
         threads: workflow.cores
